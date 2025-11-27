@@ -1,0 +1,43 @@
+# Dossier déarchivé original (contenu copié dans la racine)
+sam3_da3_roto_ultimate_v0_4/
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Cache Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Environnements virtuels
+.venv/
+venv/
+ENV/
+env/
+
+# Cache de l'application
+.sam3roto_cache/
+
+# Exports
+exports/
+
+# Modèles externes (installés via install_models.sh)
+.external_models/
+sam3/
+Depth-Anything-3/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
