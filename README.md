@@ -1,4 +1,4 @@
-# SAM3 + Depth Anything 3 — Roto Ultimate PRO v0.4 (PySide6)
+# SAM3 + Depth Anything 3 — Roto Ultimate PRO v0.5 (PySide6)
 
 Application standalone professionnelle pour le rotoscoping et l'estimation de profondeur, conçue pour les pipelines VFX (Autodesk Flame, Nuke, etc.).
 
@@ -15,6 +15,14 @@ Application standalone professionnelle pour le rotoscoping et l'estimation de pr
 - **Edge refinement** : Border fix, feather, trimap distance transform
 - **Temporal smoothing** : Stabilisation temporelle des masques
 - **Edge motion blur** : Flou de mouvement basé sur optical flow (expérimental)
+
+### 🆕 Matting Avancé (Nouveauté v0.5)
+- **Guided Filter** : Raffinement edge-preserving basé sur [He et al. (ECCV 2010)](http://kaiminghe.com/eccv10/)
+- **Trimap Automatique Avancé** : Génération intelligente pour détails fins
+- **Multi-Scale Refinement** : Traitement à plusieurs échelles pour cheveux ultra-fins
+- **Edge-Aware Smoothing** : Lissage guidé par l'image RGB
+- **8 Presets Professionnels** : Optimisés pour cheveux fins/épais, fourrure, fumée, verre, tissus, etc.
+- 📚 **[Voir le Guide Complet du Matting Avancé](ADVANCED_MATTING_GUIDE.md)**
 
 ### RGB Cleanup
 - **Despill** : 3 modes (Green average, Blue average, Physical auto-BG)
