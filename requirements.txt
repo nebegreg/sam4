@@ -10,6 +10,9 @@ imageio-ffmpeg>=0.5
 # Video decoding (required by SAM3)
 decord>=0.6.0
 
+# COCO API (required by SAM3)
+pycocotools>=2.0
+
 # ML
 torch>=2.7
 torchvision>=0.20

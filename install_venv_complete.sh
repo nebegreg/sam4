@@ -138,6 +138,15 @@ else
     log_success "Decord détecté"
 fi
 
+# Installer pycocotools séparément si nécessaire
+log_info "Vérification de pycocotools (requis par SAM3)..."
+if ! python3 -c "import pycocotools" 2>/dev/null; then
+    log_warning "Pycocotools non trouvé, installation..."
+    pip install pycocotools --quiet || log_warning "Pycocotools n'a pas pu être installé automatiquement"
+else
+    log_success "Pycocotools détecté"
+fi
+
 # Installer les dépendances optionnelles
 if [ -f "requirements_optional.txt" ]; then
     log_info "Installation des dépendances optionnelles (opencv-contrib)..."
