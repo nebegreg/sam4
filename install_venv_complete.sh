@@ -125,8 +125,17 @@ if [ -f "requirements.txt" ]; then
     log_success "Dépendances de base installées"
 else
     log_warning "requirements.txt non trouvé, installation manuelle..."
-    pip install numpy pillow opencv-python PySide6 tqdm imageio imageio-ffmpeg accelerate --quiet
+    pip install numpy pillow opencv-python PySide6 tqdm imageio imageio-ffmpeg accelerate decord --quiet
     log_success "Dépendances de base installées"
+fi
+
+# Installer decord séparément si l'installation depuis requirements a échoué
+log_info "Vérification de decord (requis par SAM3)..."
+if ! python3 -c "import decord" 2>/dev/null; then
+    log_warning "Decord non trouvé, installation..."
+    pip install decord --quiet || log_warning "Decord n'a pas pu être installé automatiquement"
+else
+    log_success "Decord détecté"
 fi
 
 # Installer les dépendances optionnelles
@@ -214,6 +223,12 @@ try:
     print(f"  ✓ Pillow {PIL.__version__}")
 except ImportError as e:
     errors.append(f"  ✗ Pillow: {e}")
+
+try:
+    import decord
+    print(f"  ✓ Decord {decord.__version__}")
+except ImportError as e:
+    errors.append(f"  ✗ Decord (requis par SAM3): {e}")
 
 try:
     from sam3.model_builder import build_sam3_image_model
