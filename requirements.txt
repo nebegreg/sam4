@@ -1,0 +1,20 @@
+# Core
+numpy>=1.24
+Pillow>=10.0
+opencv-python>=4.8
+PySide6>=6.6
+tqdm>=4.66
+imageio>=2.34
+imageio-ffmpeg>=0.5
+
+# ML
+torch>=2.7
+torchvision>=0.20
+accelerate>=0.27
+
+# Optional (for EXR writing)
+# OpenEXR>=3.2.4
+# Imath>=0.0.2
+
+# NOTE: SAM3 et Depth Anything 3 doivent être installés depuis GitHub
+# Voir le script install_models.sh ou suivez les instructions du README
