@@ -75,11 +75,16 @@ class Worker(QtCore.QObject):
 
     @QtCore.Slot()
     def run(self):
+        import sys
         try:
             result = self.fn(*self.args, **self.kwargs)
             self.finished.emit(result)
         except Exception as e:
-            self.failed.emit(traceback.format_exc())
+            exc_text = traceback.format_exc()
+            # Print to stderr immediately for debugging
+            print(f"[WORKER ERROR] Exception in worker thread:", file=sys.stderr)
+            print(exc_text, file=sys.stderr)
+            self.failed.emit(exc_text)
 
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
