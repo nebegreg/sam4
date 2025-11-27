@@ -191,86 +191,119 @@ Consultez INSTALLATION_RAPIDE.md pour plus de détails."""
         if self._image_processor is None:
             raise RuntimeError("SAM3 backend not loaded")
 
-        # Set image
-        inference_state = self._image_processor.set_image(image)
+        # Set image - returns state dict with backbone features
+        state = self._image_processor.set_image(image, state=None)
 
-        # Set text prompt
-        output = self._image_processor.set_text_prompt(
-            state=inference_state,
-            prompt=text
-        )
+        # Set confidence threshold
+        state = self._image_processor.set_confidence_threshold(threshold, state=state)
 
-        # Extract masks
-        masks = output.get("masks", [])  # List of masks
-        scores = output.get("scores", [])
+        # Set text prompt - NOTE: prompt first, state second (correct API!)
+        state = self._image_processor.set_text_prompt(prompt=text, state=state)
+
+        # Extract masks - API returns torch tensors, not lists
+        masks = state.get("masks", None)  # torch.Tensor (N, H, W)
+        scores = state.get("scores", None)  # torch.Tensor (N,)
+        boxes = state.get("boxes", None)  # torch.Tensor (N, 4)
 
         # Filter by threshold and create dict
         out: Dict[int, np.ndarray] = {}
         obj_id = 1
 
-        if isinstance(masks, list):
-            for i, (mask, score) in enumerate(zip(masks, scores)):
-                if score >= threshold:
-                    out[obj_id] = _mask_to_u8(mask)
-                    obj_id += 1
-        elif hasattr(masks, 'shape'):  # tensor
-            for i in range(masks.shape[0]):
-                if scores[i] >= threshold:
-                    out[obj_id] = _mask_to_u8(masks[i])
+        if masks is not None and scores is not None:
+            # Convert to numpy for iteration
+            if hasattr(masks, 'cpu'):
+                masks_np = masks.cpu().numpy() if masks.is_cuda else masks.numpy()
+                scores_np = scores.cpu().numpy() if scores.is_cuda else scores.numpy()
+            else:
+                masks_np = np.array(masks)
+                scores_np = np.array(scores)
+
+            for i in range(len(masks_np)):
+                if scores_np[i] >= threshold:
+                    out[obj_id] = _mask_to_u8(masks_np[i])
                     obj_id += 1
 
         return out
 
     @torch.no_grad()
     def segment_interactive_image(self, image: Image.Image, points: List[Tuple[int,int,int]], boxes: List[Tuple[int,int,int,int,int]], multimask: bool = False) -> np.ndarray:
-        """Segmentation PVS (Promptable Visual Segmentation) sur une image avec points/boxes."""
+        """Segmentation PVS (Promptable Visual Segmentation) sur une image avec points/boxes.
+
+        Note: SAM3 API uses add_geometric_prompt with normalized box coordinates.
+        Points are NOT directly supported - must convert to bounding boxes.
+        """
         if self._image_processor is None:
             raise RuntimeError("SAM3 backend not loaded")
 
-        # Set image
-        inference_state = self._image_processor.set_image(image)
+        # Set image - returns state dict
+        state = self._image_processor.set_image(image, state=None)
 
-        # Prepare prompts
-        prompt_points = []
-        prompt_labels = []
-        prompt_boxes = []
+        # Get image dimensions for normalization
+        w, h = image.size
 
-        if points:
-            for x, y, label in points:
-                prompt_points.append([int(x), int(y)])
-                prompt_labels.append(int(label))
+        # Convert points to bounding box if no boxes provided
+        if points and not boxes:
+            # Calculate bounding box from points
+            xs = [x for x, y, label in points if label == 1]  # positive points only
+            ys = [y for x, y, label in points if label == 1]
 
+            if xs and ys:
+                x1, x2 = min(xs), max(xs)
+                y1, y2 = min(ys), max(ys)
+
+                # Add margin
+                margin = 20
+                x1 = max(0, x1 - margin)
+                y1 = max(0, y1 - margin)
+                x2 = min(w, x2 + margin)
+                y2 = min(h, y2 + margin)
+
+                boxes = [(x1, y1, x2, y2, 1)]
+
+        # Process boxes
         if boxes:
-            # Use last box with positive label
+            # Use first box with positive label
             for x1, y1, x2, y2, label in boxes:
                 if label == 1:
-                    prompt_boxes.append([int(x1), int(y1), int(x2), int(y2)])
+                    # Convert to normalized center-based coordinates
+                    # API expects: [center_x, center_y, width, height] normalized
+                    center_x = (x1 + x2) / 2.0 / w
+                    center_y = (y1 + y2) / 2.0 / h
+                    box_width = (x2 - x1) / w
+                    box_height = (y2 - y1) / h
 
-        # Set prompts
-        if prompt_points:
-            output = self._image_processor.set_point_prompt(
-                state=inference_state,
-                points=np.array(prompt_points),
-                labels=np.array(prompt_labels)
-            )
-        elif prompt_boxes:
-            output = self._image_processor.set_box_prompt(
-                state=inference_state,
-                box=np.array(prompt_boxes[0])  # Use first box
-            )
-        else:
-            raise ValueError("No prompts provided")
+                    # Add geometric prompt
+                    state = self._image_processor.add_geometric_prompt(
+                        box=[center_x, center_y, box_width, box_height],
+                        label=True,  # positive prompt
+                        state=state
+                    )
+                    break  # Use first valid box
 
-        # Extract best mask
-        masks = output.get("masks", [])
-        if len(masks) == 0:
+        if not boxes:
+            raise ValueError("No valid prompts provided")
+
+        # Extract masks
+        masks = state.get("masks", None)
+        scores = state.get("scores", None)
+
+        if masks is None or len(masks) == 0:
             # Return empty mask
-            w, h = image.size
             return np.zeros((h, w), dtype=np.uint8)
 
-        # Take first/best mask
-        best_mask = masks[0] if isinstance(masks, list) else masks[0]
-        return _mask_to_u8(best_mask)
+        # Take highest scoring mask
+        if hasattr(masks, 'cpu'):
+            masks_np = masks.cpu().numpy() if masks.is_cuda else masks.numpy()
+            if scores is not None:
+                scores_np = scores.cpu().numpy() if scores.is_cuda else scores.numpy()
+                best_idx = np.argmax(scores_np)
+            else:
+                best_idx = 0
+        else:
+            masks_np = np.array(masks)
+            best_idx = 0
+
+        return _mask_to_u8(masks_np[best_idx])
 
     @torch.no_grad()
     def track_concept_video(self, frames: Sequence[Image.Image], texts: List[str]) -> Iterator[FrameMasks]:
@@ -278,24 +311,37 @@ Consultez INSTALLATION_RAPIDE.md pour plus de détails."""
         if self._video_predictor is None:
             raise RuntimeError("SAM3 backend not loaded")
 
+        if not texts:
+            raise ValueError("At least one text prompt is required")
+
         # Save frames to temporary directory
         temp_dir = Path(tempfile.mkdtemp(prefix="sam3_video_"))
+        session_id = None
+
         try:
             # Save frames as JPEG sequence
+            print(f"[SAM3 Video] Saving {len(frames)} frames to temp dir...")
             for i, frame in enumerate(frames):
                 frame.convert("RGB").save(temp_dir / f"{i:06d}.jpg", quality=95)
 
             # Start session
+            print("[SAM3 Video] Starting video session...")
             response = self._video_predictor.handle_request(
                 request=dict(
                     type="start_session",
                     resource_path=str(temp_dir),
                 )
             )
+
+            if "session_id" not in response:
+                raise RuntimeError(f"Failed to start session: {response}")
+
             session_id = response["session_id"]
+            print(f"[SAM3 Video] Session started: {session_id}")
 
             # Add text prompts on first frame
-            for text in texts:
+            print(f"[SAM3 Video] Adding {len(texts)} text prompts...")
+            for i, text in enumerate(texts):
                 response = self._video_predictor.handle_request(
                     request=dict(
                         type="add_prompt",
@@ -305,7 +351,11 @@ Consultez INSTALLATION_RAPIDE.md pour plus de détails."""
                     )
                 )
 
+                if "error" in response:
+                    print(f"[SAM3 Video] Warning: Prompt {i} failed: {response['error']}")
+
             # Propagate through video
+            print("[SAM3 Video] Propagating through video...")
             response = self._video_predictor.handle_request(
                 request=dict(
                     type="propagate",
@@ -313,8 +363,17 @@ Consultez INSTALLATION_RAPIDE.md pour plus de détails."""
                 )
             )
 
+            if "error" in response:
+                raise RuntimeError(f"Propagation failed: {response['error']}")
+
             # Extract results per frame
             outputs = response.get("outputs", {})
+            if not outputs:
+                print("[SAM3 Video] Warning: No outputs from propagation")
+                return
+
+            print(f"[SAM3 Video] Got results for {len(outputs)} frames")
+
             for frame_idx in sorted(outputs.keys()):
                 frame_output = outputs[frame_idx]
                 masks = frame_output.get("masks", [])
@@ -326,17 +385,30 @@ Consultez INSTALLATION_RAPIDE.md pour plus de détails."""
 
                 yield FrameMasks(frame_idx=int(frame_idx), masks_by_id=masks_by_id)
 
-            # End session
-            self._video_predictor.handle_request(
-                request=dict(
-                    type="end_session",
-                    session_id=session_id,
-                )
-            )
+        except Exception as e:
+            print(f"[SAM3 Video] Error during tracking: {e}")
+            raise
 
         finally:
+            # End session if it was created
+            if session_id is not None:
+                try:
+                    print(f"[SAM3 Video] Ending session {session_id}...")
+                    self._video_predictor.handle_request(
+                        request=dict(
+                            type="end_session",
+                            session_id=session_id,
+                        )
+                    )
+                except Exception as e:
+                    print(f"[SAM3 Video] Warning: Failed to end session: {e}")
+
             # Cleanup temp directory
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            try:
+                shutil.rmtree(temp_dir, ignore_errors=False)
+                print("[SAM3 Video] Temp directory cleaned up")
+            except Exception as e:
+                print(f"[SAM3 Video] Warning: Failed to cleanup temp dir: {e}")
 
     @torch.no_grad()
     def track_interactive_video(self, frames: Sequence[Image.Image], prompts: Dict[int, Dict[int, List[Tuple[int,int,int]]]]) -> Iterator[FrameMasks]:
@@ -344,23 +416,36 @@ Consultez INSTALLATION_RAPIDE.md pour plus de détails."""
         if self._video_predictor is None:
             raise RuntimeError("SAM3 backend not loaded")
 
+        if not prompts:
+            raise ValueError("At least one prompt keyframe is required")
+
         # Save frames to temporary directory
         temp_dir = Path(tempfile.mkdtemp(prefix="sam3_video_"))
+        session_id = None
+
         try:
             # Save frames as JPEG sequence
+            print(f"[SAM3 Video Interactive] Saving {len(frames)} frames...")
             for i, frame in enumerate(frames):
                 frame.convert("RGB").save(temp_dir / f"{i:06d}.jpg", quality=95)
 
             # Start session
+            print("[SAM3 Video Interactive] Starting video session...")
             response = self._video_predictor.handle_request(
                 request=dict(
                     type="start_session",
                     resource_path=str(temp_dir),
                 )
             )
+
+            if "session_id" not in response:
+                raise RuntimeError(f"Failed to start session: {response}")
+
             session_id = response["session_id"]
+            print(f"[SAM3 Video Interactive] Session started: {session_id}")
 
             # Add point prompts on keyframes
+            print(f"[SAM3 Video Interactive] Adding prompts on {len(prompts)} keyframes...")
             for frame_idx, objs in prompts.items():
                 for obj_id, points in objs.items():
                     prompt_points = [[int(x), int(y)] for x, y, _ in points]
@@ -377,7 +462,11 @@ Consultez INSTALLATION_RAPIDE.md pour plus de détails."""
                         )
                     )
 
+                    if "error" in response:
+                        print(f"[SAM3 Video Interactive] Warning: Prompt on frame {frame_idx}, obj {obj_id} failed: {response['error']}")
+
             # Propagate through video
+            print("[SAM3 Video Interactive] Propagating through video...")
             response = self._video_predictor.handle_request(
                 request=dict(
                     type="propagate",
@@ -385,8 +474,17 @@ Consultez INSTALLATION_RAPIDE.md pour plus de détails."""
                 )
             )
 
+            if "error" in response:
+                raise RuntimeError(f"Propagation failed: {response['error']}")
+
             # Extract results per frame
             outputs = response.get("outputs", {})
+            if not outputs:
+                print("[SAM3 Video Interactive] Warning: No outputs from propagation")
+                return
+
+            print(f"[SAM3 Video Interactive] Got results for {len(outputs)} frames")
+
             for frame_idx in sorted(outputs.keys()):
                 frame_output = outputs[frame_idx]
                 masks = frame_output.get("masks", [])
@@ -398,14 +496,27 @@ Consultez INSTALLATION_RAPIDE.md pour plus de détails."""
 
                 yield FrameMasks(frame_idx=int(frame_idx), masks_by_id=masks_by_id)
 
-            # End session
-            self._video_predictor.handle_request(
-                request=dict(
-                    type="end_session",
-                    session_id=session_id,
-                )
-            )
+        except Exception as e:
+            print(f"[SAM3 Video Interactive] Error during tracking: {e}")
+            raise
 
         finally:
+            # End session if it was created
+            if session_id is not None:
+                try:
+                    print(f"[SAM3 Video Interactive] Ending session {session_id}...")
+                    self._video_predictor.handle_request(
+                        request=dict(
+                            type="end_session",
+                            session_id=session_id,
+                        )
+                    )
+                except Exception as e:
+                    print(f"[SAM3 Video Interactive] Warning: Failed to end session: {e}")
+
             # Cleanup temp directory
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            try:
+                shutil.rmtree(temp_dir, ignore_errors=False)
+                print("[SAM3 Video Interactive] Temp directory cleaned up")
+            except Exception as e:
+                print(f"[SAM3 Video Interactive] Warning: Failed to cleanup temp dir: {e}")
