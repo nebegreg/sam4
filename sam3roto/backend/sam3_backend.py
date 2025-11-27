@@ -48,74 +48,122 @@ class SAM3Backend:
         self._image_model = None
         self._image_processor = None
         self._video_predictor = None
+        self._use_transformers = False  # Flag pour savoir quelle méthode est utilisée
 
     def load(self, model_id_or_path: str = "facebook/sam3-hiera-large"):
-        """Charge les modèles SAM3 pour image et vidéo."""
+        """Charge les modèles SAM3 pour image et vidéo.
+
+        Essaie deux approches:
+        1. Transformers/HuggingFace (Sam3Model, Sam3Processor)
+        2. Repo GitHub officiel (build_sam3_image_model, build_sam3_video_predictor)
+        """
         import traceback
         import sys
 
-        try:
-            print(f"[SAM3] Début du chargement...")
-            print(f"[SAM3] Device: {self.device}, dtype: {self.dtype}")
+        print(f"[SAM3] Début du chargement...")
+        print(f"[SAM3] Device: {self.device}, dtype: {self.dtype}")
+        print(f"[SAM3] Model ID/Path: {model_id_or_path}")
 
-            try:
-                from sam3.model_builder import build_sam3_image_model, build_sam3_video_predictor
-                from sam3.model.sam3_image_processor import Sam3Processor
-                print("[SAM3] Imports SAM3 réussis")
-            except ImportError as e:
-                print(f"[SAM3 ERROR] Échec de l'import SAM3: {e}", file=sys.stderr)
-                traceback.print_exc()
-                raise RuntimeError(
-                    "SAM3 n'est pas installé. Clone le repo officiel:\n"
-                    "git clone https://github.com/facebookresearch/sam3.git\n"
-                    "cd sam3\n"
-                    "pip install -e .\n"
-                    f"Import error: {e}"
-                )
+        # MÉTHODE 1: Essayer transformers (HuggingFace) - VOTRE CODE QUI MARCHAIT
+        try:
+            print("\n[SAM3] 🔄 Tentative 1: Transformers/HuggingFace...")
+            from transformers import Sam3Model, Sam3Processor
+            print("[SAM3] ✓ Imports transformers réussis")
 
             self.model_id = model_id_or_path
-            print(f"[SAM3] Model ID/Path: {model_id_or_path}")
+
+            print(f"[SAM3] Chargement depuis transformers: {model_id_or_path}")
+            model = Sam3Model.from_pretrained(model_id_or_path).to(self.device)
+            processor = Sam3Processor.from_pretrained(model_id_or_path)
+
+            if self.dtype in (torch.float16, torch.bfloat16):
+                print(f"[SAM3] Conversion en {self.dtype}...")
+                model = model.to(dtype=self.dtype)
+            model.eval()
+
+            # Stocker dans les attributs (interface simplifiée pour transformers)
+            self._image_model = model
+            self._image_processor = processor
+            self._video_predictor = model  # Utiliser le même modèle pour vidéo
+            self._use_transformers = True
+
+            print("✅ SAM3 chargé avec succès (transformers)")
+            return
+
+        except ImportError as e:
+            print(f"[SAM3] ⚠️  Transformers SAM3 non disponible: {e}")
+        except Exception as e:
+            print(f"[SAM3] ⚠️  Échec transformers: {e}")
+            traceback.print_exc()
+
+        # MÉTHODE 2: Essayer repo GitHub officiel
+        try:
+            print("\n[SAM3] 🔄 Tentative 2: Repo GitHub officiel...")
+            from sam3.model_builder import build_sam3_image_model, build_sam3_video_predictor
+            from sam3.model.sam3_image_processor import Sam3Processor as Sam3ProcessorOfficial
+            print("[SAM3] ✓ Imports repo GitHub réussis")
+
+            self.model_id = model_id_or_path
+            self._use_transformers = False
 
             # Image model + processor
-            print(f"[SAM3] Chargement SAM3 image model...")
-            try:
-                self._image_model = build_sam3_image_model(checkpoint=model_id_or_path)
-                print(f"[SAM3] Image model construit, déplacement vers {self.device}...")
-                self._image_model = self._image_model.to(self.device)
-                if self.dtype in (torch.float16, torch.bfloat16):
-                    print(f"[SAM3] Conversion en {self.dtype}...")
-                    self._image_model = self._image_model.to(dtype=self.dtype)
-                self._image_model.eval()
-                print("[SAM3] Création du processor...")
-                self._image_processor = Sam3Processor(self._image_model)
-                print("[SAM3] ✅ Image model OK")
-            except Exception as e:
-                print(f"[SAM3 ERROR] Échec du chargement image model: {e}", file=sys.stderr)
-                traceback.print_exc()
-                raise
+            print(f"[SAM3] Chargement image model...")
+            self._image_model = build_sam3_image_model(checkpoint=model_id_or_path)
+            print(f"[SAM3] Déplacement vers {self.device}...")
+            self._image_model = self._image_model.to(self.device)
+            if self.dtype in (torch.float16, torch.bfloat16):
+                print(f"[SAM3] Conversion en {self.dtype}...")
+                self._image_model = self._image_model.to(dtype=self.dtype)
+            self._image_model.eval()
+
+            print("[SAM3] Création du processor...")
+            self._image_processor = Sam3ProcessorOfficial(self._image_model)
+            print("[SAM3] ✅ Image model OK")
 
             # Video predictor
-            print(f"[SAM3] Chargement SAM3 video predictor...")
-            try:
-                self._video_predictor = build_sam3_video_predictor(checkpoint=model_id_or_path)
-                print(f"[SAM3] Video predictor construit, déplacement vers {self.device}...")
-                self._video_predictor.model = self._video_predictor.model.to(self.device)
-                if self.dtype in (torch.float16, torch.bfloat16):
-                    print(f"[SAM3] Conversion en {self.dtype}...")
-                    self._video_predictor.model = self._video_predictor.model.to(dtype=self.dtype)
-                self._video_predictor.model.eval()
-                print("[SAM3] ✅ Video predictor OK")
-            except Exception as e:
-                print(f"[SAM3 ERROR] Échec du chargement video predictor: {e}", file=sys.stderr)
-                traceback.print_exc()
-                raise
+            print(f"[SAM3] Chargement video predictor...")
+            self._video_predictor = build_sam3_video_predictor(checkpoint=model_id_or_path)
+            print(f"[SAM3] Déplacement vers {self.device}...")
+            self._video_predictor.model = self._video_predictor.model.to(self.device)
+            if self.dtype in (torch.float16, torch.bfloat16):
+                print(f"[SAM3] Conversion en {self.dtype}...")
+                self._video_predictor.model = self._video_predictor.model.to(dtype=self.dtype)
+            self._video_predictor.model.eval()
+            print("[SAM3] ✅ Video predictor OK")
 
-            print("✅ SAM3 chargé avec succès")
+            print("✅ SAM3 chargé avec succès (repo GitHub)")
+            return
 
-        except Exception as e:
-            print(f"[SAM3 FATAL ERROR] Échec global du chargement: {e}", file=sys.stderr)
+        except ImportError as e:
+            print(f"[SAM3] ❌ Repo GitHub non disponible: {e}", file=sys.stderr)
             traceback.print_exc()
-            raise
+        except Exception as e:
+            print(f"[SAM3] ❌ Échec repo GitHub: {e}", file=sys.stderr)
+            traceback.print_exc()
+
+        # Si on arrive ici, les deux méthodes ont échoué
+        error_msg = f"""❌ Impossible de charger SAM3 avec aucune méthode!
+
+🔧 SOLUTIONS:
+
+1. TRANSFORMERS (Simple):
+   pip install --upgrade transformers
+   # Puis utiliser: 'facebook/sam3-hiera-large'
+
+2. REPO GITHUB (Complet):
+   cd ~/Documents/venv_sam/.external_models
+   git clone https://github.com/facebookresearch/sam3.git
+   cd sam3
+   pip install -e .
+   # Puis utiliser le chemin local du modèle
+
+3. VÉRIFIER DÉPENDANCES:
+   pip install pycocotools decord
+
+Consultez INSTALLATION_RAPIDE.md pour plus de détails."""
+
+        print(f"\n[SAM3 FATAL ERROR]\n{error_msg}", file=sys.stderr)
+        raise RuntimeError(error_msg)
 
     def is_ready(self) -> bool:
         return self._image_processor is not None and self._video_predictor is not None
