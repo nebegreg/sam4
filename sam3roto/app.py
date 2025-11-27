@@ -66,16 +66,19 @@ def blend_overlays(alphas: List[Tuple[np.ndarray, Tuple[int,int,int]]]) -> QtGui
 class Worker(QtCore.QObject):
     finished = QtCore.Signal(object)
     failed = QtCore.Signal(str)
+
     def __init__(self, fn, *args, **kwargs):
-        super().__init__()
+        super().__init__(parent=None)  # Pas de parent pour éviter les erreurs de threading
         self.fn = fn
         self.args = args
         self.kwargs = kwargs
+
     @QtCore.Slot()
     def run(self):
         try:
-            self.finished.emit(self.fn(*self.args, **self.kwargs))
-        except Exception:
+            result = self.fn(*self.args, **self.kwargs)
+            self.finished.emit(result)
+        except Exception as e:
             self.failed.emit(traceback.format_exc())
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -1039,13 +1042,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # -------- threading --------
     def _run_thread(self, fn, tag: str):
-        th = QtCore.QThread(self)
+        # Créer le thread sans parent pour éviter les conflits
+        th = QtCore.QThread()
         wk = Worker(fn)
         wk.moveToThread(th)
         th.started.connect(wk.run)
 
         def done(res):
-            th.quit()
             if tag == "LOAD_MEDIA":
                 self._apply_media(res)
             elif tag == "SAM3_LOADED":
@@ -1068,13 +1071,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._set_status("✅ Export terminé.")
             else:
                 self._set_status("✅ Terminé.")
+            # Arrêter le thread après traitement
+            th.quit()
 
         def fail(err):
-            th.quit()
             QtWidgets.QMessageBox.critical(self, "Erreur", err)
             self._set_status("❌ Erreur.")
+            th.quit()
 
         def cleanup():
+            # Nettoyer les objets quand le thread est terminé
             wk.deleteLater()
             th.deleteLater()
 
