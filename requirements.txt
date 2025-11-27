@@ -7,6 +7,9 @@ tqdm>=4.66
 imageio>=2.34
 imageio-ffmpeg>=0.5
 
+# System monitoring (for memory management optimizations)
+psutil>=5.9.0
+
 # Video decoding (required by SAM3)
 decord>=0.6.0
 
