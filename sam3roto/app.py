@@ -1045,7 +1045,7 @@ class MainWindow(QtWidgets.QMainWindow):
         th.started.connect(wk.run)
 
         def done(res):
-            th.quit(); th.wait()
+            th.quit()
             if tag == "LOAD_MEDIA":
                 self._apply_media(res)
             elif tag == "SAM3_LOADED":
@@ -1068,16 +1068,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._set_status("✅ Export terminé.")
             else:
                 self._set_status("✅ Terminé.")
-            wk.deleteLater(); th.deleteLater()
 
         def fail(err):
-            th.quit(); th.wait()
+            th.quit()
             QtWidgets.QMessageBox.critical(self, "Erreur", err)
             self._set_status("❌ Erreur.")
-            wk.deleteLater(); th.deleteLater()
+
+        def cleanup():
+            wk.deleteLater()
+            th.deleteLater()
 
         wk.finished.connect(done)
         wk.failed.connect(fail)
+        th.finished.connect(cleanup)
         th.start()
 
 def main():
