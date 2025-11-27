@@ -8,6 +8,19 @@ import tempfile
 import shutil
 from pathlib import Path
 
+# Import optimizations
+try:
+    from ..utils import (
+        get_memory_manager,
+        get_feature_cache,
+        timed_operation,
+        torch_inference_mode,
+    )
+    _HAS_OPTIMIZATIONS = True
+except ImportError:
+    _HAS_OPTIMIZATIONS = False
+    print("[SAM3Backend] Warning: Optimizations not available")
+
 @dataclass
 class FrameMasks:
     frame_idx: int
@@ -40,7 +53,7 @@ class SAM3Backend:
     Références:
     https://github.com/facebookresearch/sam3
     """
-    def __init__(self):
+    def __init__(self, enable_optimizations: bool = True):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.dtype = torch.bfloat16 if (self.device.type == "cuda" and torch.cuda.is_bf16_supported()) else torch.float16 if self.device.type == "cuda" else torch.float32
 
@@ -49,6 +62,17 @@ class SAM3Backend:
         self._image_processor = None
         self._video_predictor = None
         self._use_transformers = False  # Flag pour savoir quelle méthode est utilisée
+
+        # Optimizations
+        self.enable_optimizations = enable_optimizations and _HAS_OPTIMIZATIONS
+        if self.enable_optimizations:
+            self.memory_manager = get_memory_manager()
+            self.feature_cache = get_feature_cache()
+            print("[SAM3Backend] Optimizations ENABLED (memory management + caching)")
+        else:
+            self.memory_manager = None
+            self.feature_cache = None
+            print("[SAM3Backend] Optimizations DISABLED")
 
     def load(self, model_id_or_path: str = "facebook/sam3-hiera-large"):
         """Charge les modèles SAM3 pour image et vidéo.
@@ -60,7 +84,21 @@ class SAM3Backend:
         import traceback
         import sys
 
-        print(f"[SAM3] Début du chargement...")
+        # Print memory stats before loading
+        if self.enable_optimizations:
+            print("\n[SAM3] Memory before loading:")
+            stats_before = self.memory_manager.get_stats()
+            print(stats_before)
+
+            # Check if we have enough memory
+            estimated_model_size = 4.0  # GB estimate for SAM3 large
+            device_str = "cuda" if self.device.type == "cuda" else "cpu"
+
+            if not self.memory_manager.can_load_model(estimated_model_size, device=device_str):
+                print(f"[SAM3] ⚠️  Warning: May not have enough memory! Attempting cleanup...")
+                self.memory_manager.cleanup(aggressive=True)
+
+        print(f"\n[SAM3] Début du chargement...")
         print(f"[SAM3] Device: {self.device}, dtype: {self.dtype}")
         print(f"[SAM3] Model ID/Path: {model_id_or_path}")
 
@@ -88,6 +126,13 @@ class SAM3Backend:
             self._use_transformers = True
 
             print("✅ SAM3 chargé avec succès (transformers)")
+
+            # Print memory stats after loading
+            if self.enable_optimizations:
+                print("\n[SAM3] Memory after loading:")
+                stats_after = self.memory_manager.get_stats()
+                print(stats_after)
+
             return
 
         except ImportError as e:
@@ -149,6 +194,13 @@ class SAM3Backend:
             print("[SAM3] ✅ Video predictor OK")
 
             print("✅ SAM3 chargé avec succès (repo GitHub)")
+
+            # Print memory stats after loading
+            if self.enable_optimizations:
+                print("\n[SAM3] Memory after loading:")
+                stats_after = self.memory_manager.get_stats()
+                print(stats_after)
+
             return
 
         except ImportError as e:
