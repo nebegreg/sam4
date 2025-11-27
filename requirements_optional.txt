@@ -1,0 +1,20 @@
+# Dépendances optionnelles pour fonctionnalités avancées
+
+# OpenCV Contrib (pour edge-aware filtering avancé)
+# Fournit: joint bilateral filter, domain transform filter
+opencv-contrib-python>=4.8
+
+# Alternative: installer uniquement opencv-python-headless si pas besoin de GUI OpenCV
+# opencv-python-headless>=4.8
+
+# Note: Les fonctionnalités de base fonctionnent avec opencv-python standard
+# opencv-contrib-python ajoute:
+#   - cv2.ximgproc.jointBilateralFilter (edge-aware smoothing)
+#   - cv2.ximgproc.createDomainTransformFilter (detail preserving blur)
+#   - cv2.alphamat.infoFlow (information flow matting - très bon pour cheveux)
+
+# Installation:
+# pip install opencv-contrib-python
+
+# Si cv2.alphamat n'est pas disponible, l'app utilisera automatiquement
+# le guided filter comme fallback (déjà implémenté dans advanced_matting.py)

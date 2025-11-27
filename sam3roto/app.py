@@ -20,6 +20,8 @@ from .post.despill import estimate_bg_color, despill_green_average, despill_blue
 from .post.pixelspread import pixel_spread_rgb
 from .post.composite import premultiply
 from .post.flowblur import edge_motion_blur_alpha
+from .post.advanced_matting import refine_alpha_for_hair, multi_scale_refinement, edge_aware_smoothing
+from .post.matting_presets import get_preset, list_presets, PRESETS
 from .ui.viewer import Viewer
 from .ui.widgets import LabeledSlider
 
@@ -181,6 +183,45 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # --- Matte tab ---
         t2 = QtWidgets.QWidget(); l2 = QtWidgets.QVBoxLayout(t2)
+
+        # Presets
+        preset_group = QtWidgets.QGroupBox("Matting Presets")
+        preset_layout = QtWidgets.QVBoxLayout(preset_group)
+
+        preset_row = QtWidgets.QHBoxLayout()
+        preset_row.addWidget(QtWidgets.QLabel("Preset:"))
+        self.cb_preset = QtWidgets.QComboBox()
+        self.cb_preset.addItem("Custom", "custom")
+        for preset_key, preset in PRESETS.items():
+            self.cb_preset.addItem(preset.name, preset_key)
+        preset_row.addWidget(self.cb_preset, 1)
+        preset_layout.addLayout(preset_row)
+
+        self.lbl_preset_desc = QtWidgets.QLabel("")
+        self.lbl_preset_desc.setWordWrap(True)
+        self.lbl_preset_desc.setStyleSheet("color: #888; font-size: 10px;")
+        preset_layout.addWidget(self.lbl_preset_desc)
+
+        l2.addWidget(preset_group)
+
+        # Advanced matting options
+        adv_group = QtWidgets.QGroupBox("Advanced Matting")
+        adv_layout = QtWidgets.QVBoxLayout(adv_group)
+
+        self.chk_advanced_matting = QtWidgets.QCheckBox("Enable advanced matting (for hair/fur)")
+        self.chk_advanced_matting.setChecked(True)
+        adv_layout.addWidget(self.chk_advanced_matting)
+
+        self.cb_advanced_mode = QtWidgets.QComboBox()
+        self.cb_advanced_mode.addItems(["Guided Filter", "Trimap Refinement", "Both (Best Quality)"])
+        adv_layout.addWidget(self.cb_advanced_mode)
+
+        self.chk_multi_scale = QtWidgets.QCheckBox("Multi-scale refinement (slower, better quality)")
+        adv_layout.addWidget(self.chk_multi_scale)
+
+        l2.addWidget(adv_group)
+
+        # Standard matte controls
         self.sl_grow = LabeledSlider("Grow/Shrink", -20, 20, 0, " px")
         self.sl_holes = LabeledSlider("Fill holes area", 0, 8000, 300, "")
         self.sl_dots = LabeledSlider("Remove dots area", 0, 8000, 200, "")
@@ -331,6 +372,8 @@ class MainWindow(QtWidgets.QMainWindow):
         act_save.triggered.connect(self.on_save_project)
         act_load.triggered.connect(self.on_load_project)
 
+        self.cb_preset.currentIndexChanged.connect(self.on_preset_changed)
+
         self.on_tool_changed(self.tool.currentText())
         self.on_sign_changed(self.sign.currentText())
 
@@ -342,6 +385,42 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _set_status(self, s: str):
         self.lbl_status.setText(s)
+
+    def on_preset_changed(self, index: int):
+        """Charge un preset et met à jour tous les sliders"""
+        preset_key = self.cb_preset.currentData()
+        if preset_key == "custom" or preset_key is None:
+            self.lbl_preset_desc.setText("Paramètres personnalisés")
+            return
+
+        preset = get_preset(preset_key)
+        self.lbl_preset_desc.setText(preset.description)
+
+        # Update sliders
+        self.sl_grow.setValue(preset.grow_shrink)
+        self.sl_holes.setValue(preset.fill_holes)
+        self.sl_dots.setValue(preset.remove_dots)
+        self.sl_border.setValue(preset.border_fix)
+        self.sl_feather.setValue(int(preset.feather))
+        self.sl_trimap.setValue(preset.trimap_band)
+        self.sl_temporal.setValue(int(preset.temporal_smooth * 100))
+
+        # Update checkboxes
+        self.chk_trimap.setChecked(preset.use_trimap)
+        self.chk_advanced_matting.setChecked(preset.use_advanced_matting)
+
+        # Update advanced options
+        mode_map = {"guided": 0, "trimap": 1, "both": 2}
+        self.cb_advanced_mode.setCurrentIndex(mode_map.get(preset.advanced_mode, 0))
+        self.chk_multi_scale.setChecked(preset.multi_scale)
+
+        # Update RGB settings
+        self.cb_despill.setCurrentIndex(preset.despill_mode)
+        self.sl_despill.setValue(int(preset.despill_strength * 100))
+        self.chk_luma.setChecked(preset.use_luminance_restore)
+        self.sl_spread.setValue(int(preset.pixel_spread))
+
+        self._set_status(f"✅ Preset chargé: {preset.name}")
 
     def prev_frame(self):
         if self.frames:
@@ -504,6 +583,19 @@ class MainWindow(QtWidgets.QMainWindow):
             a = alpha_from_trimap(m, band=self.sl_trimap.value())
         else:
             a = feather_alpha(m, radius=float(self.sl_feather.value()))
+
+        # Advanced matting pour les détails fins (cheveux, fur)
+        if self.chk_advanced_matting.isChecked() and cur_rgb is not None:
+            mode_idx = self.cb_advanced_mode.currentIndex()
+            mode_map = {0: "guided", 1: "trimap", 2: "both"}
+            mode = mode_map.get(mode_idx, "guided")
+
+            if self.chk_multi_scale.isChecked():
+                # Multi-scale pour capturer différents niveaux de détails
+                a = multi_scale_refinement(cur_rgb, a, scales=[1.0, 0.5, 0.25])
+            else:
+                # Raffinement simple
+                a = refine_alpha_for_hair(cur_rgb, a, mode=mode, radius=8, eps=1e-5)
 
         if self.chk_flowblur.isChecked() and prev_rgb is not None and cur_rgb is not None and prev_alpha is not None:
             a = edge_motion_blur_alpha(prev_rgb, cur_rgb, a, strength=self.sl_flow.value()/100.0, samples=6)
