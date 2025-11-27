@@ -106,15 +106,27 @@ class SAM3Backend:
             self.model_id = model_id_or_path
             self._use_transformers = False
 
+            # Déterminer si on charge depuis HuggingFace ou depuis un chemin local
+            from pathlib import Path
+            is_local_path = Path(model_id_or_path).exists()
+            load_from_hf = not is_local_path
+
+            print(f"[SAM3] Mode de chargement: {'HuggingFace' if load_from_hf else 'Local'}")
+
             # Image model + processor
             print(f"[SAM3] Chargement image model...")
-            self._image_model = build_sam3_image_model(checkpoint=model_id_or_path)
-            print(f"[SAM3] Déplacement vers {self.device}...")
-            self._image_model = self._image_model.to(self.device)
+            self._image_model = build_sam3_image_model(
+                checkpoint_path=model_id_or_path if not load_from_hf else None,
+                load_from_HF=load_from_hf,
+                device=str(self.device),
+                eval_mode=True
+            )
+            print(f"[SAM3] Image model construit (déjà sur {self.device})")
+
+            # Le modèle est déjà sur le device, mais on peut changer le dtype
             if self.dtype in (torch.float16, torch.bfloat16):
                 print(f"[SAM3] Conversion en {self.dtype}...")
                 self._image_model = self._image_model.to(dtype=self.dtype)
-            self._image_model.eval()
 
             print("[SAM3] Création du processor...")
             self._image_processor = Sam3ProcessorOfficial(self._image_model)
@@ -122,13 +134,18 @@ class SAM3Backend:
 
             # Video predictor
             print(f"[SAM3] Chargement video predictor...")
-            self._video_predictor = build_sam3_video_predictor(checkpoint=model_id_or_path)
-            print(f"[SAM3] Déplacement vers {self.device}...")
-            self._video_predictor.model = self._video_predictor.model.to(self.device)
+            self._video_predictor = build_sam3_video_predictor(
+                checkpoint_path=model_id_or_path if not load_from_hf else None,
+                load_from_HF=load_from_hf,
+                device=str(self.device)
+            )
+            print(f"[SAM3] Video predictor construit")
+
+            # Appliquer dtype si nécessaire
             if self.dtype in (torch.float16, torch.bfloat16):
                 print(f"[SAM3] Conversion en {self.dtype}...")
                 self._video_predictor.model = self._video_predictor.model.to(dtype=self.dtype)
-            self._video_predictor.model.eval()
+
             print("[SAM3] ✅ Video predictor OK")
 
             print("✅ SAM3 chargé avec succès (repo GitHub)")
