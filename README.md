@@ -49,6 +49,30 @@ Application standalone professionnelle pour le rotoscoping et l'estimation de pr
 
 ---
 
+## 🚀 Quick Start
+
+**New to SAM3 Roto? See [QUICKSTART.md](QUICKSTART.md) for a 5-minute setup guide!**
+
+### 📚 Documentation
+
+- **[Quick Start Guide](QUICKSTART.md)** - Get started in 5 minutes
+- **[Optimizations Guide](OPTIMIZATIONS_GUIDE.md)** - Memory management, caching, batch processing
+- **[Examples](examples/README.md)** - Example scripts with detailed explanations
+- **[Audit Report](AUDIT_REPORT.md)** - Technical fixes and improvements
+- **[Roadmap](ROADMAP.md)** - Future features and development plan
+- **[Final Recap](FINAL_RECAP.md)** - Complete session summary
+- **[Advanced Matting Guide](ADVANCED_MATTING_GUIDE.md)** - Professional matting techniques
+
+### ⚡ Installation Verification
+
+After installation, verify everything works:
+
+```bash
+python verify_installation.py
+```
+
+---
+
 ## Installation
 
 ### Prérequis
