@@ -463,36 +463,44 @@ Consultez QUICK_INSTALL.md pour plus de détails."""
                 if "error" in response:
                     print(f"[SAM3 Video] Warning: Prompt {i} failed: {response['error']}")
 
-            # Propagate through video
+            # Propagate through video using streaming API
+            logger.info("[SAM3 Video] Propagating through video...")
             print("[SAM3 Video] Propagating through video...")
-            response = self._video_predictor.handle_request(
+
+            # Use handle_stream_request for propagation (returns generator)
+            for response in self._video_predictor.handle_stream_request(
                 request=dict(
-                    type="propagate",
+                    type="propagate_in_video",
                     session_id=session_id,
                 )
-            )
+            ):
+                logger.debug(f"[SAM3 Video] Frame {response.get('frame_index', '?')} response")
 
-            if "error" in response:
-                raise RuntimeError(f"Propagation failed: {response['error']}")
+                if "error" in response:
+                    logger.error(f"[SAM3 Video] Frame error: {response['error']}")
+                    continue
 
-            # Extract results per frame
-            outputs = response.get("outputs", {})
-            if not outputs:
-                print("[SAM3 Video] Warning: No outputs from propagation")
-                return
+                frame_idx = response.get("frame_index")
+                if frame_idx is None:
+                    logger.warning("[SAM3 Video] Response missing frame_index")
+                    continue
 
-            print(f"[SAM3 Video] Got results for {len(outputs)} frames")
+                # Extract outputs for this frame
+                outputs = response.get("outputs", {})
+                if not outputs:
+                    logger.warning(f"[SAM3 Video] No outputs for frame {frame_idx}")
+                    continue
 
-            for frame_idx in sorted(outputs.keys()):
-                frame_output = outputs[frame_idx]
-                masks = frame_output.get("masks", [])
-                object_ids = frame_output.get("object_ids", list(range(1, len(masks) + 1)))
-
+                # Extract masks and object IDs
                 masks_by_id = {}
-                for obj_id, mask in zip(object_ids, masks):
-                    masks_by_id[int(obj_id)] = _mask_to_u8(mask)
+                for obj_id, obj_output in outputs.items():
+                    mask = obj_output.get("mask")
+                    if mask is not None:
+                        masks_by_id[int(obj_id)] = _mask_to_u8(mask)
 
-                yield FrameMasks(frame_idx=int(frame_idx), masks_by_id=masks_by_id)
+                if masks_by_id:
+                    logger.debug(f"[SAM3 Video] Frame {frame_idx}: {len(masks_by_id)} objects")
+                    yield FrameMasks(frame_idx=int(frame_idx), masks_by_id=masks_by_id)
 
         except Exception as e:
             logger.error(f"[SAM3 Video] Error during tracking: {e}", exc_info=True)
@@ -500,18 +508,18 @@ Consultez QUICK_INSTALL.md pour plus de détails."""
             raise
 
         finally:
-            # End session if it was created
+            # Close session if it was created
             if session_id is not None:
                 try:
-                    logger.info(f"[SAM3 Video] Ending session {session_id}...")
-                    print(f"[SAM3 Video] Ending session {session_id}...")
+                    logger.info(f"[SAM3 Video] Closing session {session_id}...")
+                    print(f"[SAM3 Video] Closing session {session_id}...")
                     self._video_predictor.handle_request(
                         request=dict(
-                            type="end_session",
+                            type="close_session",
                             session_id=session_id,
                         )
                     )
-                    logger.info("[SAM3 Video] Session ended successfully")
+                    logger.info("[SAM3 Video] Session closed successfully")
                 except Exception as e:
                     print(f"[SAM3 Video] Warning: Failed to end session: {e}")
 
@@ -577,49 +585,51 @@ Consultez QUICK_INSTALL.md pour plus de détails."""
                     if "error" in response:
                         print(f"[SAM3 Video Interactive] Warning: Prompt on frame {frame_idx}, obj {obj_id} failed: {response['error']}")
 
-            # Propagate through video
+            # Propagate through video using streaming API
             print("[SAM3 Video Interactive] Propagating through video...")
-            response = self._video_predictor.handle_request(
+
+            # Use handle_stream_request for propagation (returns generator)
+            for response in self._video_predictor.handle_stream_request(
                 request=dict(
-                    type="propagate",
+                    type="propagate_in_video",
                     session_id=session_id,
                 )
-            )
+            ):
+                if "error" in response:
+                    print(f"[SAM3 Video Interactive] Frame error: {response['error']}")
+                    continue
 
-            if "error" in response:
-                raise RuntimeError(f"Propagation failed: {response['error']}")
+                frame_idx = response.get("frame_index")
+                if frame_idx is None:
+                    continue
 
-            # Extract results per frame
-            outputs = response.get("outputs", {})
-            if not outputs:
-                print("[SAM3 Video Interactive] Warning: No outputs from propagation")
-                return
+                # Extract outputs for this frame
+                outputs = response.get("outputs", {})
+                if not outputs:
+                    continue
 
-            print(f"[SAM3 Video Interactive] Got results for {len(outputs)} frames")
-
-            for frame_idx in sorted(outputs.keys()):
-                frame_output = outputs[frame_idx]
-                masks = frame_output.get("masks", [])
-                object_ids = frame_output.get("object_ids", list(range(1, len(masks) + 1)))
-
+                # Extract masks and object IDs
                 masks_by_id = {}
-                for obj_id, mask in zip(object_ids, masks):
-                    masks_by_id[int(obj_id)] = _mask_to_u8(mask)
+                for obj_id, obj_output in outputs.items():
+                    mask = obj_output.get("mask")
+                    if mask is not None:
+                        masks_by_id[int(obj_id)] = _mask_to_u8(mask)
 
-                yield FrameMasks(frame_idx=int(frame_idx), masks_by_id=masks_by_id)
+                if masks_by_id:
+                    yield FrameMasks(frame_idx=int(frame_idx), masks_by_id=masks_by_id)
 
         except Exception as e:
             print(f"[SAM3 Video Interactive] Error during tracking: {e}")
             raise
 
         finally:
-            # End session if it was created
+            # Close session if it was created
             if session_id is not None:
                 try:
-                    print(f"[SAM3 Video Interactive] Ending session {session_id}...")
+                    print(f"[SAM3 Video Interactive] Closing session {session_id}...")
                     self._video_predictor.handle_request(
                         request=dict(
-                            type="end_session",
+                            type="close_session",
                             session_id=session_id,
                         )
                     )
