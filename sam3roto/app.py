@@ -24,6 +24,9 @@ from .post.advanced_matting import refine_alpha_for_hair, multi_scale_refinement
 from .post.matting_presets import get_preset, list_presets, PRESETS
 from .ui.viewer import Viewer
 from .ui.widgets import LabeledSlider
+from .ui.theme import PROFESSIONAL_THEME, ICONS
+from .ui.professional_widgets import (ModernSlider, IconButton, StatusLabel,
+                                       ParameterGroup, ModernComboBox, ModernProgressBar)
 
 def pil_to_rgb_u8(img: Image.Image) -> np.ndarray:
     return np.array(img.convert("RGB"), dtype=np.uint8)
@@ -89,8 +92,11 @@ class Worker(QtCore.QObject):
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("SAM3 + DA3 Roto Ultimate PRO v0.4")
-        self.resize(1640, 980)
+        self.setWindowTitle("SAM3 Roto Ultimate PRO v0.5 - Professional Edition")
+        self.resize(1800, 1000)
+
+        # Apply professional theme
+        self.setStyleSheet(PROFESSIONAL_THEME)
 
         self.sam3 = SAM3Backend()
         self.da3 = DepthAnything3Backend(Path.cwd() / ".sam3roto_cache" / "da3_tmp")
@@ -111,237 +117,404 @@ class MainWindow(QtWidgets.QMainWindow):
         self._ensure_obj(1)
         self._refresh_obj_list(select=1)
 
+        # Set window icon if available
+        try:
+            self.setWindowIcon(QtGui.QIcon.fromTheme("video-editor"))
+        except:
+            pass
+
     # ---------------- UI ----------------
     def _build_ui(self):
+        # Central widget with modern layout
         cw = QtWidgets.QWidget()
         self.setCentralWidget(cw)
         main = QtWidgets.QHBoxLayout(cw)
+        main.setSpacing(12)
+        main.setContentsMargins(12, 12, 12, 12)
 
+        # Viewer area (left/center)
         self.viewer = Viewer()
         main.addWidget(self.viewer, 4)
 
+        # Control panel (right)
         right = QtWidgets.QWidget()
         main.addWidget(right, 2)
         r = QtWidgets.QVBoxLayout(right)
-        r.setContentsMargins(10,10,10,10)
+        r.setContentsMargins(0, 0, 0, 0)
+        r.setSpacing(12)
 
+        # === SOURCE SECTION ===
+        source_group = ParameterGroup("📁 Source", "Import video or image sequence")
         src_row = QtWidgets.QHBoxLayout()
-        self.btn_video = QtWidgets.QPushButton("📼 Import vidéo")
-        self.btn_seq = QtWidgets.QPushButton("🖼️ Import suite")
+        self.btn_video = IconButton(ICONS["video"], "Video", "Import video file", primary=True)
+        self.btn_seq = IconButton(ICONS["images"], "Images", "Import image sequence", primary=True)
         src_row.addWidget(self.btn_video)
         src_row.addWidget(self.btn_seq)
-        r.addLayout(src_row)
+        source_group.main_layout.addLayout(src_row)
+        r.addWidget(source_group)
 
+        # === SAM3 MODEL SECTION ===
+        sam3_group = ParameterGroup("🤖 SAM3 Model", "Configure and load SAM3 segmentation model")
         self.le_sam3 = QtWidgets.QLineEdit(self.state.model_path)
-        self.le_sam3.setPlaceholderText("SAM3 model id (facebook/sam3) ou chemin local")
-        r.addWidget(self.le_sam3)
-        self.btn_sam3_load = QtWidgets.QPushButton("⚙️ Charger SAM3")
-        r.addWidget(self.btn_sam3_load)
+        self.le_sam3.setPlaceholderText("facebook/sam3 or local path")
+        sam3_group.main_layout.addWidget(self.le_sam3)
+        self.btn_sam3_load = IconButton(ICONS["settings"], "Load SAM3", "Load SAM3 model", primary=True)
+        sam3_group.main_layout.addWidget(self.btn_sam3_load)
+        r.addWidget(sam3_group)
 
-        r.addWidget(QtWidgets.QLabel("Objets :"))
+        # === OBJECTS SECTION ===
+        obj_group = ParameterGroup("🎯 Objects", "Manage segmentation objects")
         self.obj_list = QtWidgets.QListWidget()
         self.obj_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
-        r.addWidget(self.obj_list, 1)
+        obj_group.main_layout.addWidget(self.obj_list)
 
         obj_row = QtWidgets.QHBoxLayout()
-        self.btn_add_obj = QtWidgets.QPushButton("＋")
-        self.btn_del_obj = QtWidgets.QPushButton("－")
-        self.btn_clear_prompts = QtWidgets.QPushButton("Clear prompts(frame,obj)")
+        self.btn_add_obj = IconButton(ICONS["add"], "Add", "Add new object")
+        self.btn_del_obj = IconButton(ICONS["remove"], "Delete", "Delete selected object", danger=True)
+        self.btn_clear_prompts = IconButton(ICONS["clear"], "Clear", "Clear prompts for current frame/object")
         obj_row.addWidget(self.btn_add_obj)
         obj_row.addWidget(self.btn_del_obj)
         obj_row.addWidget(self.btn_clear_prompts)
-        r.addLayout(obj_row)
+        obj_group.main_layout.addLayout(obj_row)
+        r.addWidget(obj_group, 1)
 
+        # === TABS ===
         self.tabs = QtWidgets.QTabWidget()
         r.addWidget(self.tabs, 4)
 
         # --- Seg/Track tab ---
-        t1 = QtWidgets.QWidget(); l1 = QtWidgets.QVBoxLayout(t1)
+        t1 = QtWidgets.QWidget()
+        t1_scroll = QtWidgets.QScrollArea()
+        t1_scroll.setWidgetResizable(True)
+        t1_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        t1_scroll.setWidget(t1)
+        l1 = QtWidgets.QVBoxLayout(t1)
+        l1.setContentsMargins(12, 12, 12, 12)
+        l1.setSpacing(12)
 
-        self.mode = QtWidgets.QComboBox()
-        self.mode.addItems([
-            "Concept (PCS) image",
-            "Interactive (PVS) image",
-            "Concept (PCS) video (track all instances)",
-            "Interactive (PVS) video (keyframes)",
+        # Mode selection
+        mode_label = QtWidgets.QLabel("Segmentation Mode")
+        mode_label.setProperty("subheading", True)
+        l1.addWidget(mode_label)
+        self.mode = ModernComboBox([
+            "Concept (PCS) - Image",
+            "Interactive (PVS) - Image",
+            "Concept (PCS) - Video (track all)",
+            "Interactive (PVS) - Video (keyframes)",
         ])
         l1.addWidget(self.mode)
 
+        # Concept text
+        concept_label = QtWidgets.QLabel("Concept Text")
+        concept_label.setProperty("subheading", True)
+        l1.addWidget(concept_label)
         self.le_text = QtWidgets.QLineEdit(self.state.concept_text)
-        self.le_text.setPlaceholderText("Concept text (ex: person, hard hat, red dress…)")
+        self.le_text.setPlaceholderText("e.g., person, hard hat, red dress...")
         l1.addWidget(self.le_text)
 
+        # Tool selection
+        tool_label = QtWidgets.QLabel("Annotation Tool")
+        tool_label.setProperty("subheading", True)
+        l1.addWidget(tool_label)
         tool_row = QtWidgets.QHBoxLayout()
-        self.tool = QtWidgets.QComboBox(); self.tool.addItems(["Point","+/-", "Box"])
-        self.sign = QtWidgets.QComboBox(); self.sign.addItems(["+", "-"])
-        tool_row.addWidget(QtWidgets.QLabel("Tool"))
-        tool_row.addWidget(self.tool, 1)
-        tool_row.addWidget(QtWidgets.QLabel("Sign"))
-        tool_row.addWidget(self.sign, 0)
+        tool_row.setSpacing(8)
+        self.tool = ModernComboBox(["Point", "+/-", "Box"])
+        self.sign = ModernComboBox(["+", "-"])
+        tool_row.addWidget(QtWidgets.QLabel("Tool:"))
+        tool_row.addWidget(self.tool, 2)
+        tool_row.addWidget(QtWidgets.QLabel("Sign:"))
+        tool_row.addWidget(self.sign, 1)
         l1.addLayout(tool_row)
 
+        l1.addSpacing(12)
+
+        # Action buttons
         btn_row = QtWidgets.QHBoxLayout()
-        self.btn_segment = QtWidgets.QPushButton("▶ Segment frame")
-        self.btn_track = QtWidgets.QPushButton("🧷 Track (video)")
+        btn_row.setSpacing(8)
+        self.btn_segment = IconButton(ICONS["segment"], "Segment", "Segment current frame", primary=True)
+        self.btn_track = IconButton(ICONS["track"], "Track", "Track through video", primary=True)
         btn_row.addWidget(self.btn_segment)
         btn_row.addWidget(self.btn_track)
         l1.addLayout(btn_row)
 
-        self.lbl_status = QtWidgets.QLabel("Prêt.")
-        self.lbl_status.setWordWrap(True)
+        # Status display
+        l1.addSpacing(12)
+        status_label = QtWidgets.QLabel("Status")
+        status_label.setProperty("subheading", True)
+        l1.addWidget(status_label)
+        self.lbl_status = StatusLabel("Ready")
         l1.addWidget(self.lbl_status)
-        self.tabs.addTab(t1, "Seg/Track")
+
+        l1.addStretch()
+        self.tabs.addTab(t1_scroll, "✂️ Segment / Track")
 
         # --- Matte tab ---
-        t2 = QtWidgets.QWidget(); l2 = QtWidgets.QVBoxLayout(t2)
+        t2 = QtWidgets.QWidget()
+        t2_scroll = QtWidgets.QScrollArea()
+        t2_scroll.setWidgetResizable(True)
+        t2_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        t2_scroll.setWidget(t2)
+        l2 = QtWidgets.QVBoxLayout(t2)
+        l2.setContentsMargins(12, 12, 12, 12)
+        l2.setSpacing(12)
 
         # Presets
-        preset_group = QtWidgets.QGroupBox("Matting Presets")
-        preset_layout = QtWidgets.QVBoxLayout(preset_group)
-
+        preset_group = ParameterGroup("🎨 Matting Presets", "Quick settings for common scenarios")
         preset_row = QtWidgets.QHBoxLayout()
-        preset_row.addWidget(QtWidgets.QLabel("Preset:"))
-        self.cb_preset = QtWidgets.QComboBox()
+        preset_label = QtWidgets.QLabel("Preset:")
+        preset_label.setMinimumWidth(60)
+        preset_row.addWidget(preset_label)
+        self.cb_preset = ModernComboBox()
         self.cb_preset.addItem("Custom", "custom")
         for preset_key, preset in PRESETS.items():
             self.cb_preset.addItem(preset.name, preset_key)
         preset_row.addWidget(self.cb_preset, 1)
-        preset_layout.addLayout(preset_row)
+        preset_group.main_layout.addLayout(preset_row)
 
         self.lbl_preset_desc = QtWidgets.QLabel("")
         self.lbl_preset_desc.setWordWrap(True)
-        self.lbl_preset_desc.setStyleSheet("color: #888; font-size: 10px;")
-        preset_layout.addWidget(self.lbl_preset_desc)
-
+        self.lbl_preset_desc.setStyleSheet("color: #9d9d9d; font-size: 9pt;")
+        preset_group.main_layout.addWidget(self.lbl_preset_desc)
         l2.addWidget(preset_group)
 
         # Advanced matting options
-        adv_group = QtWidgets.QGroupBox("Advanced Matting")
-        adv_layout = QtWidgets.QVBoxLayout(adv_group)
-
-        self.chk_advanced_matting = QtWidgets.QCheckBox("Enable advanced matting (for hair/fur)")
+        adv_group = ParameterGroup("✨ Advanced Matting", "Enhanced matting for hair, fur, and fine details")
+        self.chk_advanced_matting = QtWidgets.QCheckBox("Enable advanced matting")
         self.chk_advanced_matting.setChecked(True)
-        adv_layout.addWidget(self.chk_advanced_matting)
+        adv_group.main_layout.addWidget(self.chk_advanced_matting)
 
-        self.cb_advanced_mode = QtWidgets.QComboBox()
-        self.cb_advanced_mode.addItems(["Guided Filter", "Trimap Refinement", "Both (Best Quality)"])
-        adv_layout.addWidget(self.cb_advanced_mode)
+        self.cb_advanced_mode = ModernComboBox(["Guided Filter", "Trimap Refinement", "Both (Best Quality)"])
+        adv_group.main_layout.addWidget(self.cb_advanced_mode)
 
-        self.chk_multi_scale = QtWidgets.QCheckBox("Multi-scale refinement (slower, better quality)")
-        adv_layout.addWidget(self.chk_multi_scale)
-
+        self.chk_multi_scale = QtWidgets.QCheckBox("Multi-scale refinement (slower, higher quality)")
+        adv_group.main_layout.addWidget(self.chk_multi_scale)
         l2.addWidget(adv_group)
 
         # Standard matte controls
-        self.sl_grow = LabeledSlider("Grow/Shrink", -20, 20, 0, " px")
-        self.sl_holes = LabeledSlider("Fill holes area", 0, 8000, 300, "")
-        self.sl_dots = LabeledSlider("Remove dots area", 0, 8000, 200, "")
-        self.sl_border = LabeledSlider("Border fix", 0, 25, 2, " px")
-        self.sl_feather = LabeledSlider("Feather", 0, 40, 4, " px")
-        self.sl_trimap = LabeledSlider("Trimap band", 1, 60, 14, " px")
-        self.sl_temporal = LabeledSlider("Temporal smooth", 0, 100, 60, " %")
+        controls_group = ParameterGroup("🎛️ Matte Controls", "Fine-tune alpha matte parameters")
+        self.sl_grow = ModernSlider("Grow / Shrink", -20, 20, 0, " px", "Expand or contract the matte")
+        self.sl_holes = ModernSlider("Fill Holes", 0, 8000, 300, " px", "Remove small holes inside the matte")
+        self.sl_dots = ModernSlider("Remove Dots", 0, 8000, 200, " px", "Remove small isolated pixels")
+        self.sl_border = ModernSlider("Border Fix", 0, 25, 2, " px", "Clean up edges")
+        self.sl_feather = ModernSlider("Feather", 0, 40, 4, " px", "Soften the matte edges")
+        self.sl_trimap = ModernSlider("Trimap Band", 1, 60, 14, " px", "Transition zone width")
+        self.sl_temporal = ModernSlider("Temporal Smooth", 0, 100, 60, " %", "Smoothing between frames")
         for w in [self.sl_grow, self.sl_holes, self.sl_dots, self.sl_border, self.sl_feather, self.sl_trimap, self.sl_temporal]:
-            l2.addWidget(w)
-        self.chk_trimap = QtWidgets.QCheckBox("Raffiner alpha (trimap distance)")
+            controls_group.main_layout.addWidget(w)
+
+        self.chk_trimap = QtWidgets.QCheckBox("Refine alpha (trimap distance)")
         self.chk_trimap.setChecked(True)
-        l2.addWidget(self.chk_trimap)
+        controls_group.main_layout.addWidget(self.chk_trimap)
+        l2.addWidget(controls_group)
 
-        self.chk_flowblur = QtWidgets.QCheckBox("Edge motion blur (optical flow)")
+        # Motion blur
+        motion_group = ParameterGroup("💨 Motion Blur", "Edge motion blur based on optical flow")
+        self.chk_flowblur = QtWidgets.QCheckBox("Enable edge motion blur")
         self.chk_flowblur.setChecked(False)
-        l2.addWidget(self.chk_flowblur)
-        self.sl_flow = LabeledSlider("Flow blur strength", 0, 100, 35, " %")
-        l2.addWidget(self.sl_flow)
+        motion_group.main_layout.addWidget(self.chk_flowblur)
+        self.sl_flow = ModernSlider("Blur Strength", 0, 100, 35, " %", "Motion blur intensity")
+        motion_group.main_layout.addWidget(self.sl_flow)
+        l2.addWidget(motion_group)
 
-        self.btn_preview = QtWidgets.QPushButton("👁️ Preview overlays (visible objs)")
+        # Preview button
+        l2.addSpacing(8)
+        self.btn_preview = IconButton(ICONS["preview"], "Preview Overlays", "Preview visible objects", primary=True)
         l2.addWidget(self.btn_preview)
-        self.tabs.addTab(t2, "Matte")
+
+        l2.addStretch()
+        self.tabs.addTab(t2_scroll, "🎭 Matte")
 
         # --- RGB tab ---
-        t3 = QtWidgets.QWidget(); l3 = QtWidgets.QVBoxLayout(t3)
-        self.chk_despill = QtWidgets.QCheckBox("Despill")
-        self.chk_despill.setChecked(True)
-        l3.addWidget(self.chk_despill)
+        t3 = QtWidgets.QWidget()
+        t3_scroll = QtWidgets.QScrollArea()
+        t3_scroll.setWidgetResizable(True)
+        t3_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        t3_scroll.setWidget(t3)
+        l3 = QtWidgets.QVBoxLayout(t3)
+        l3.setContentsMargins(12, 12, 12, 12)
+        l3.setSpacing(12)
 
-        self.cb_despill = QtWidgets.QComboBox()
-        self.cb_despill.addItems(["Green average", "Blue average", "Physical (auto BG)"])
-        l3.addWidget(self.cb_despill)
-        self.sl_despill = LabeledSlider("Despill strength", 0, 100, 85, " %")
-        l3.addWidget(self.sl_despill)
+        # Despill
+        despill_group = ParameterGroup("🟢 Despill", "Remove green/blue screen color spill")
+        self.chk_despill = QtWidgets.QCheckBox("Enable despill")
+        self.chk_despill.setChecked(True)
+        despill_group.main_layout.addWidget(self.chk_despill)
+
+        self.cb_despill = ModernComboBox(["Green average", "Blue average", "Physical (auto BG)"])
+        despill_group.main_layout.addWidget(self.cb_despill)
+
+        self.sl_despill = ModernSlider("Despill Strength", 0, 100, 85, " %", "Amount of color spill removal")
+        despill_group.main_layout.addWidget(self.sl_despill)
+
         self.chk_luma = QtWidgets.QCheckBox("Luminance restore")
         self.chk_luma.setChecked(True)
-        l3.addWidget(self.chk_luma)
+        despill_group.main_layout.addWidget(self.chk_luma)
+        l3.addWidget(despill_group)
 
-        self.chk_spread = QtWidgets.QCheckBox("Edge extend / Pixel spread")
+        # Edge spread
+        spread_group = ParameterGroup("📐 Edge Extend", "Expand RGB beyond matte edges")
+        self.chk_spread = QtWidgets.QCheckBox("Enable edge extend / pixel spread")
         self.chk_spread.setChecked(True)
-        l3.addWidget(self.chk_spread)
-        self.sl_spread = LabeledSlider("Spread radius", 0, 40, 10, " px")
-        l3.addWidget(self.sl_spread)
+        spread_group.main_layout.addWidget(self.chk_spread)
 
-        self.chk_premult = QtWidgets.QCheckBox("Exporter premultiplied (sinon straight)")
+        self.sl_spread = ModernSlider("Spread Radius", 0, 40, 10, " px", "Distance to extend color")
+        spread_group.main_layout.addWidget(self.sl_spread)
+        l3.addWidget(spread_group)
+
+        # Composite options
+        comp_group = ParameterGroup("🎬 Composite", "Final output settings")
+        self.chk_premult = QtWidgets.QCheckBox("Export premultiplied (otherwise straight alpha)")
         self.chk_premult.setChecked(False)
-        l3.addWidget(self.chk_premult)
-        self.tabs.addTab(t3, "RGB / Comp")
+        comp_group.main_layout.addWidget(self.chk_premult)
+        l3.addWidget(comp_group)
+
+        l3.addStretch()
+        self.tabs.addTab(t3_scroll, "🎨 RGB / Comp")
 
         # --- Depth tab (DA3) ---
-        t4 = QtWidgets.QWidget(); l4 = QtWidgets.QVBoxLayout(t4)
+        t4 = QtWidgets.QWidget()
+        t4_scroll = QtWidgets.QScrollArea()
+        t4_scroll.setWidgetResizable(True)
+        t4_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        t4_scroll.setWidget(t4)
+        l4 = QtWidgets.QVBoxLayout(t4)
+        l4.setContentsMargins(12, 12, 12, 12)
+        l4.setSpacing(12)
+
+        # DA3 Model
+        da3_model_group = ParameterGroup("🤖 Depth Anything 3 Model", "Configure DA3 depth estimation model")
+        model_label = QtWidgets.QLabel("Model ID:")
+        model_label.setProperty("subheading", True)
+        da3_model_group.main_layout.addWidget(model_label)
         self.le_da3 = QtWidgets.QLineEdit(self.state.da3_model_id)
-        l4.addWidget(QtWidgets.QLabel("DA3 model id:"))
-        l4.addWidget(self.le_da3)
+        self.le_da3.setPlaceholderText("depth-anything/DA3-BASE or local path")
+        da3_model_group.main_layout.addWidget(self.le_da3)
 
         row = QtWidgets.QHBoxLayout()
-        self.btn_da3_load = QtWidgets.QPushButton("⚙️ Charger DA3")
-        self.btn_da3_run = QtWidgets.QPushButton("🌊 Depth+Camera (all frames)")
+        row.setSpacing(8)
+        self.btn_da3_load = IconButton(ICONS["settings"], "Load DA3", "Load depth estimation model", primary=True)
+        self.btn_da3_run = IconButton(ICONS["depth"], "Run All", "Process all frames", primary=True)
         row.addWidget(self.btn_da3_load)
         row.addWidget(self.btn_da3_run)
-        l4.addLayout(row)
+        da3_model_group.main_layout.addLayout(row)
+        l4.addWidget(da3_model_group)
 
-        self.btn_da3_prev_depth = QtWidgets.QPushButton("👁️ Preview depth (false color)")
-        self.btn_da3_prev_norm = QtWidgets.QPushButton("👁️ Preview normals")
-        l4.addWidget(self.btn_da3_prev_depth)
-        l4.addWidget(self.btn_da3_prev_norm)
+        # Preview
+        preview_group = ParameterGroup("👁️ Preview", "Visualize depth and normals")
+        self.btn_da3_prev_depth = IconButton(ICONS["preview"], "Preview Depth", "Show depth map (false color)")
+        self.btn_da3_prev_norm = IconButton(ICONS["preview"], "Preview Normals", "Show surface normals")
+        preview_group.main_layout.addWidget(self.btn_da3_prev_depth)
+        preview_group.main_layout.addWidget(self.btn_da3_prev_norm)
+        l4.addWidget(preview_group)
 
+        # Export
+        export_group = ParameterGroup("📤 Export", "Export depth data and 3D information")
+        export_label = QtWidgets.QLabel("Export Folder:")
+        export_label.setProperty("subheading", True)
+        export_group.main_layout.addWidget(export_label)
         self.le_da3_out = QtWidgets.QLineEdit(str(Path.cwd() / "exports" / "depth_anything3"))
-        l4.addWidget(QtWidgets.QLabel("Export folder (DA3):"))
-        l4.addWidget(self.le_da3_out)
+        export_group.main_layout.addWidget(self.le_da3_out)
 
-        self.btn_da3_exp_depth = QtWidgets.QPushButton("Export depth PNG16 seq")
-        self.btn_da3_exp_norm = QtWidgets.QPushButton("Export normals PNG seq")
-        self.btn_da3_exp_cam = QtWidgets.QPushButton("Export camera_npz")
-        self.btn_da3_exp_ply = QtWidgets.QPushButton("Export global pointcloud PLY")
-        self.btn_da3_blender = QtWidgets.QPushButton("Generate Blender export script (FBX/Alembic)")
+        export_group.main_layout.addSpacing(8)
+        self.btn_da3_exp_depth = IconButton(ICONS["export"], "Depth PNG16", "Export depth maps as 16-bit PNG")
+        self.btn_da3_exp_norm = IconButton(ICONS["export"], "Normals PNG", "Export normal maps as PNG")
+        self.btn_da3_exp_cam = IconButton(ICONS["camera"], "Camera NPZ", "Export camera parameters")
+        self.btn_da3_exp_ply = IconButton(ICONS["export"], "Pointcloud PLY", "Export 3D pointcloud")
+        self.btn_da3_blender = IconButton(ICONS["export"], "Blender Script", "Generate FBX/Alembic export script")
         for b in [self.btn_da3_exp_depth, self.btn_da3_exp_norm, self.btn_da3_exp_cam, self.btn_da3_exp_ply, self.btn_da3_blender]:
-            l4.addWidget(b)
+            export_group.main_layout.addWidget(b)
+        l4.addWidget(export_group)
 
-        l4.addStretch(1)
-        self.tabs.addTab(t4, "Depth / Camera (DA3)")
+        l4.addStretch()
+        self.tabs.addTab(t4_scroll, "🌊 Depth / Camera")
 
         # --- Export tab ---
-        t5 = QtWidgets.QWidget(); l5 = QtWidgets.QVBoxLayout(t5)
-        self.le_export = QtWidgets.QLineEdit(str(Path.cwd() / "exports"))
-        l5.addWidget(QtWidgets.QLabel("Export folder (SAM3):"))
-        l5.addWidget(self.le_export)
-        self.btn_exp_alpha = QtWidgets.QPushButton("Export alpha PNG (obj actif)")
-        self.btn_exp_rgba = QtWidgets.QPushButton("Export RGBA PNG (obj actif)")
-        self.btn_exp_all_alpha = QtWidgets.QPushButton("Export alpha ALL objs")
-        self.btn_exp_all_rgba = QtWidgets.QPushButton("Export RGBA ALL objs")
-        self.btn_exp_prores = QtWidgets.QPushButton("Export ProRes4444 MOV (obj actif, ffmpeg)")
-        for b in [self.btn_exp_alpha, self.btn_exp_rgba, self.btn_exp_all_alpha, self.btn_exp_all_rgba, self.btn_exp_prores]:
-            l5.addWidget(b)
-        self.tabs.addTab(t5, "Export")
+        t5 = QtWidgets.QWidget()
+        t5_scroll = QtWidgets.QScrollArea()
+        t5_scroll.setWidgetResizable(True)
+        t5_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        t5_scroll.setWidget(t5)
+        l5 = QtWidgets.QVBoxLayout(t5)
+        l5.setContentsMargins(12, 12, 12, 12)
+        l5.setSpacing(12)
 
-        # timeline
-        bottom = QtWidgets.QHBoxLayout()
+        # Export settings
+        export_settings_group = ParameterGroup("⚙️ Export Settings", "Configure output location")
+        folder_label = QtWidgets.QLabel("Export Folder:")
+        folder_label.setProperty("subheading", True)
+        export_settings_group.main_layout.addWidget(folder_label)
+        self.le_export = QtWidgets.QLineEdit(str(Path.cwd() / "exports"))
+        export_settings_group.main_layout.addWidget(self.le_export)
+        l5.addWidget(export_settings_group)
+
+        # Single object export
+        single_group = ParameterGroup("📦 Active Object", "Export current selected object")
+        self.btn_exp_alpha = IconButton(ICONS["export"], "Alpha PNG", "Export alpha matte sequence")
+        self.btn_exp_rgba = IconButton(ICONS["export"], "RGBA PNG", "Export RGB with alpha sequence")
+        self.btn_exp_prores = IconButton(ICONS["export"], "ProRes4444", "Export as MOV (requires ffmpeg)")
+        single_group.main_layout.addWidget(self.btn_exp_alpha)
+        single_group.main_layout.addWidget(self.btn_exp_rgba)
+        single_group.main_layout.addWidget(self.btn_exp_prores)
+        l5.addWidget(single_group)
+
+        # All objects export
+        all_group = ParameterGroup("📚 All Objects", "Export all objects at once")
+        self.btn_exp_all_alpha = IconButton(ICONS["export"], "All Alpha PNG", "Export all alpha mattes")
+        self.btn_exp_all_rgba = IconButton(ICONS["export"], "All RGBA PNG", "Export all RGBA sequences")
+        all_group.main_layout.addWidget(self.btn_exp_all_alpha)
+        all_group.main_layout.addWidget(self.btn_exp_all_rgba)
+        l5.addWidget(all_group)
+
+        l5.addStretch()
+        self.tabs.addTab(t5_scroll, "📤 Export")
+
+        # === TIMELINE ===
+        timeline_group = ParameterGroup("⏱️ Timeline", "Navigate through frames")
+        timeline_layout = QtWidgets.QHBoxLayout()
+        timeline_layout.setSpacing(12)
+
         self.slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.slider.setEnabled(False)
-        self.lbl_frame = QtWidgets.QLabel("Frame: -/-")
-        bottom.addWidget(self.slider, 1)
-        bottom.addWidget(self.lbl_frame, 0)
-        r.addLayout(bottom)
+        self.slider.setMinimumHeight(32)
+        timeline_layout.addWidget(self.slider, 1)
 
-        # menu
-        menu = self.menuBar().addMenu("File")
-        act_save = menu.addAction("Save project…")
-        act_load = menu.addAction("Load project…")
+        self.lbl_frame = QtWidgets.QLabel("Frame: 0 / 0")
+        self.lbl_frame.setStyleSheet("""
+            font-size: 12pt;
+            font-weight: 600;
+            color: #0d7377;
+            padding: 4px 12px;
+            background-color: #2d2d2d;
+            border-radius: 6px;
+            min-width: 120px;
+        """)
+        self.lbl_frame.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        timeline_layout.addWidget(self.lbl_frame)
+
+        timeline_group.main_layout.addLayout(timeline_layout)
+        r.addWidget(timeline_group)
+
+        # === MENU BAR ===
+        menubar = self.menuBar()
+
+        # File menu
+        file_menu = menubar.addMenu("📁 File")
+        act_save = file_menu.addAction(f"{ICONS['save']} Save Project...")
+        act_save.setShortcut("Ctrl+S")
+        act_load = file_menu.addAction(f"{ICONS['load']} Load Project...")
+        act_load.setShortcut("Ctrl+O")
+        file_menu.addSeparator()
+        act_quit = file_menu.addAction("❌ Quit")
+        act_quit.setShortcut("Ctrl+Q")
+        act_quit.triggered.connect(self.close)
+
+        # Help menu
+        help_menu = menubar.addMenu("❓ Help")
+        act_about = help_menu.addAction(f"{ICONS['info']} About")
+        act_shortcuts = help_menu.addAction("⌨️ Keyboard Shortcuts")
+
+        # === STATUS BAR ===
+        self.statusBar().showMessage("Ready - SAM3 Roto Ultimate PRO v0.5")
 
         # connections
         self.btn_video.clicked.connect(self.on_load_video)
@@ -394,8 +567,24 @@ class MainWindow(QtWidgets.QMainWindow):
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Enter"), self, activated=self.on_segment_frame)
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+T"), self, activated=self.on_track_video)
 
-    def _set_status(self, s: str):
-        self.lbl_status.setText(s)
+    def _set_status(self, s: str, status: str = "info"):
+        """Update status display and status bar
+
+        Args:
+            s: Status message
+            status: Status type ('info', 'success', 'warning', 'error')
+        """
+        # Update tab status label
+        self.lbl_status.setStatus(s, status)
+        # Update main status bar
+        icons = {
+            "info": ICONS["info"],
+            "success": ICONS["success"],
+            "warning": ICONS["warning"],
+            "error": ICONS["error"],
+        }
+        icon = icons.get(status, ICONS["info"])
+        self.statusBar().showMessage(f"{icon} {s}")
 
     def on_preset_changed(self, index: int):
         """Charge un preset et met à jour tous les sliders"""
