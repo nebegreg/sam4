@@ -104,6 +104,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.mask_cache = MaskCache(Path.cwd() / ".sam3roto_cache" / "masks")
         self.depth_cache = DepthCache(Path.cwd() / ".sam3roto_cache" / "depth")
 
+        # Store active threads to prevent garbage collection
+        self._active_threads: List[Tuple[QtCore.QThread, Worker]] = []
+
         self._build_ui()
         self._ensure_obj(1)
         self._refresh_obj_list(select=1)
@@ -1053,6 +1056,9 @@ class MainWindow(QtWidgets.QMainWindow):
         wk.moveToThread(th)
         th.started.connect(wk.run)
 
+        # Store thread and worker to prevent garbage collection
+        self._active_threads.append((th, wk))
+
         def done(res):
             if tag == "LOAD_MEDIA":
                 self._apply_media(res)
@@ -1085,6 +1091,12 @@ class MainWindow(QtWidgets.QMainWindow):
             th.quit()
 
         def cleanup():
+            # Remove from active threads list
+            try:
+                self._active_threads.remove((th, wk))
+            except ValueError:
+                pass  # Already removed
+
             # Nettoyer les objets quand le thread est terminé
             wk.deleteLater()
             th.deleteLater()
