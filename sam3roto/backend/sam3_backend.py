@@ -7,6 +7,16 @@ from PIL import Image
 import tempfile
 import shutil
 from pathlib import Path
+import sys
+
+# Import logging
+try:
+    from ..utils.logging import get_logger
+    logger = get_logger("SAM3Backend")
+except ImportError:
+    import logging
+    logger = logging.getLogger("SAM3Backend")
+    logger.setLevel(logging.INFO)
 
 # Import optimizations
 try:
@@ -122,12 +132,24 @@ class SAM3Backend:
 
             # Image model + processor
             print(f"[SAM3] Chargement image model...")
-            self._image_model = build_sam3_image_model(
-                checkpoint_path=model_id_or_path if not load_from_hf else None,
-                load_from_HF=load_from_hf,
-                device=str(self.device),
-                eval_mode=True
-            )
+
+            # Essayer avec load_from_HF (nouvelle API)
+            try:
+                self._image_model = build_sam3_image_model(
+                    checkpoint_path=model_id_or_path if not load_from_hf else None,
+                    load_from_HF=load_from_hf,
+                    device=str(self.device),
+                    eval_mode=True
+                )
+            except TypeError:
+                # Fallback: ancienne API sans load_from_HF
+                print("[SAM3] API ancienne détectée, essai sans load_from_HF...")
+                self._image_model = build_sam3_image_model(
+                    checkpoint_path=model_id_or_path if not load_from_hf else model_id_or_path,
+                    device=str(self.device),
+                    eval_mode=True
+                )
+
             print(f"[SAM3] Image model construit (déjà sur {self.device})")
 
             # Le modèle est déjà sur le device, mais on peut changer le dtype
@@ -141,11 +163,22 @@ class SAM3Backend:
 
             # Video predictor
             print(f"[SAM3] Chargement video predictor...")
-            self._video_predictor = build_sam3_video_predictor(
-                checkpoint_path=model_id_or_path if not load_from_hf else None,
-                load_from_HF=load_from_hf,
-                device=str(self.device)
-            )
+
+            # Essayer avec load_from_HF (nouvelle API)
+            try:
+                self._video_predictor = build_sam3_video_predictor(
+                    checkpoint_path=model_id_or_path if not load_from_hf else None,
+                    load_from_HF=load_from_hf,
+                    device=str(self.device)
+                )
+            except TypeError:
+                # Fallback: ancienne API sans load_from_HF
+                print("[SAM3] API ancienne détectée, essai sans load_from_HF...")
+                self._video_predictor = build_sam3_video_predictor(
+                    checkpoint_path=model_id_or_path if not load_from_hf else model_id_or_path,
+                    device=str(self.device)
+                )
+
             print(f"[SAM3] Video predictor construit")
 
             # Appliquer dtype si nécessaire
@@ -372,30 +405,42 @@ Consultez QUICK_INSTALL.md pour plus de détails."""
     @torch.no_grad()
     def track_concept_video(self, frames: Sequence[Image.Image], texts: List[str]) -> Iterator[FrameMasks]:
         """Tracking PCS vidéo avec prompts texte."""
+        logger.info(f"track_concept_video: début (frames={len(frames)}, texts={texts})")
+
         if self._video_predictor is None:
+            logger.error("track_concept_video: SAM3 backend not loaded")
             raise RuntimeError("SAM3 backend not loaded")
 
         if not texts:
+            logger.error("track_concept_video: no text prompts provided")
             raise ValueError("At least one text prompt is required")
 
         # Save frames to temporary directory
         temp_dir = Path(tempfile.mkdtemp(prefix="sam3_video_"))
+        logger.debug(f"track_concept_video: temp_dir={temp_dir}")
         session_id = None
 
         try:
             # Save frames as JPEG sequence
+            logger.info(f"[SAM3 Video] Saving {len(frames)} frames to temp dir...")
             print(f"[SAM3 Video] Saving {len(frames)} frames to temp dir...")
             for i, frame in enumerate(frames):
+                logger.debug(f"track_concept_video: saving frame {i}/{len(frames)}")
                 frame.convert("RGB").save(temp_dir / f"{i:06d}.jpg", quality=95)
+            logger.info(f"[SAM3 Video] Frames saved")
 
             # Start session
+            logger.info("[SAM3 Video] Starting video session...")
             print("[SAM3 Video] Starting video session...")
+            logger.debug(f"track_concept_video: calling handle_request(type=start_session)")
+
             response = self._video_predictor.handle_request(
                 request=dict(
                     type="start_session",
                     resource_path=str(temp_dir),
                 )
             )
+            logger.debug(f"track_concept_video: handle_request returned: {response}")
 
             if "session_id" not in response:
                 raise RuntimeError(f"Failed to start session: {response}")
@@ -450,6 +495,7 @@ Consultez QUICK_INSTALL.md pour plus de détails."""
                 yield FrameMasks(frame_idx=int(frame_idx), masks_by_id=masks_by_id)
 
         except Exception as e:
+            logger.error(f"[SAM3 Video] Error during tracking: {e}", exc_info=True)
             print(f"[SAM3 Video] Error during tracking: {e}")
             raise
 
@@ -457,6 +503,7 @@ Consultez QUICK_INSTALL.md pour plus de détails."""
             # End session if it was created
             if session_id is not None:
                 try:
+                    logger.info(f"[SAM3 Video] Ending session {session_id}...")
                     print(f"[SAM3 Video] Ending session {session_id}...")
                     self._video_predictor.handle_request(
                         request=dict(
@@ -464,6 +511,7 @@ Consultez QUICK_INSTALL.md pour plus de détails."""
                             session_id=session_id,
                         )
                     )
+                    logger.info("[SAM3 Video] Session ended successfully")
                 except Exception as e:
                     print(f"[SAM3 Video] Warning: Failed to end session: {e}")
 
