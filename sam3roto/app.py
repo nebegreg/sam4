@@ -923,7 +923,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _job_pcs_video(self, texts: List[str]):
         prev_alpha = {}  # obj -> alpha
         prev_rgb_u8 = None
-        for fm in self.sam3.track_concept_video(self.frames, texts=texts):
+        # Utilise la version simplifiée (segmentation image frame-par-frame)
+        for fm in self.sam3.process_video_concept(self.frames, texts=texts):
             cur_rgb_u8 = pil_to_rgb_u8(self.frames[fm.frame_idx])
             for oid, m in fm.masks_by_id.items():
                 self._ensure_obj(int(oid))
@@ -937,7 +938,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _job_pvs_video(self, prompts: Dict[int, Dict[int, List[Tuple[int,int,int]]]]):
         prev_alpha = {}
         prev_rgb_u8 = None
-        for fm in self.sam3.track_interactive_video(self.frames, prompts=prompts):
+        # Utilise la version simplifiée (segmentation image frame-par-frame avec keyframes)
+        for fm in self.sam3.process_video_interactive(self.frames, prompts=prompts):
             cur_rgb_u8 = pil_to_rgb_u8(self.frames[fm.frame_idx])
             for oid, m in fm.masks_by_id.items():
                 self._ensure_obj(int(oid))

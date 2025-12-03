@@ -403,242 +403,167 @@ Consultez QUICK_INSTALL.md pour plus de détails."""
         return _mask_to_u8(masks_np[best_idx])
 
     @torch.no_grad()
-    def track_concept_video(self, frames: Sequence[Image.Image], texts: List[str]) -> Iterator[FrameMasks]:
-        """Tracking PCS vidéo avec prompts texte."""
-        logger.info(f"track_concept_video: début (frames={len(frames)}, texts={texts})")
+    def process_video_concept(self, frames: Sequence[Image.Image], texts: List[str],
+                              threshold: float = 0.5) -> Iterator[FrameMasks]:
+        """Segmentation PCS frame-par-frame (simplifié, plus robuste que tracking vidéo).
 
-        if self._video_predictor is None:
-            logger.error("track_concept_video: SAM3 backend not loaded")
+        Cette méthode utilise la segmentation IMAGE sur chaque frame au lieu du tracking vidéo.
+        Avantages:
+        - API simple et robuste
+        - Fonctionne avec transformers ET GitHub SAM3
+        - Meilleure qualité selon les reviewers
+        - Pas de gestion de session complexe
+
+        Le temporal smoothing est fait en post-processing par l'application.
+        """
+        logger.info(f"process_video_concept: début (frames={len(frames)}, texts={texts})")
+
+        if self._image_processor is None:
+            logger.error("process_video_concept: SAM3 backend not loaded")
             raise RuntimeError("SAM3 backend not loaded")
 
         if not texts:
-            logger.error("track_concept_video: no text prompts provided")
+            logger.error("process_video_concept: no text prompts provided")
             raise ValueError("At least one text prompt is required")
 
-        # Save frames to temporary directory
-        temp_dir = Path(tempfile.mkdtemp(prefix="sam3_video_"))
-        logger.debug(f"track_concept_video: temp_dir={temp_dir}")
-        session_id = None
+        total_frames = len(frames)
+        logger.info(f"[SAM3 Video Simple] Processing {total_frames} frames with {len(texts)} prompts")
+        print(f"[SAM3 Video Simple] Processing {total_frames} frames...")
 
-        try:
-            # Save frames as JPEG sequence
-            logger.info(f"[SAM3 Video] Saving {len(frames)} frames to temp dir...")
-            print(f"[SAM3 Video] Saving {len(frames)} frames to temp dir...")
-            for i, frame in enumerate(frames):
-                logger.debug(f"track_concept_video: saving frame {i}/{len(frames)}")
-                frame.convert("RGB").save(temp_dir / f"{i:06d}.jpg", quality=95)
-            logger.info(f"[SAM3 Video] Frames saved")
+        for frame_idx, frame in enumerate(frames):
+            logger.debug(f"process_video_concept: processing frame {frame_idx}/{total_frames}")
 
-            # Start session
-            logger.info("[SAM3 Video] Starting video session...")
-            print("[SAM3 Video] Starting video session...")
-            logger.debug(f"track_concept_video: calling handle_request(type=start_session)")
+            # Afficher progression tous les 10 frames
+            if frame_idx % 10 == 0:
+                print(f"[SAM3 Video Simple] Frame {frame_idx}/{total_frames}...")
 
-            response = self._video_predictor.handle_request(
-                request=dict(
-                    type="start_session",
-                    resource_path=str(temp_dir),
-                )
-            )
-            logger.debug(f"track_concept_video: handle_request returned: {response}")
-
-            if "session_id" not in response:
-                raise RuntimeError(f"Failed to start session: {response}")
-
-            session_id = response["session_id"]
-            print(f"[SAM3 Video] Session started: {session_id}")
-
-            # Add text prompts on first frame
-            print(f"[SAM3 Video] Adding {len(texts)} text prompts...")
-            for i, text in enumerate(texts):
-                response = self._video_predictor.handle_request(
-                    request=dict(
-                        type="add_prompt",
-                        session_id=session_id,
-                        frame_index=0,
-                        text=text,
-                    )
-                )
-
-                if "error" in response:
-                    print(f"[SAM3 Video] Warning: Prompt {i} failed: {response['error']}")
-
-            # Propagate through video using streaming API
-            logger.info("[SAM3 Video] Propagating through video...")
-            print("[SAM3 Video] Propagating through video...")
-
-            # Use handle_stream_request for propagation (returns generator)
-            for response in self._video_predictor.handle_stream_request(
-                request=dict(
-                    type="propagate_in_video",
-                    session_id=session_id,
-                )
-            ):
-                logger.debug(f"[SAM3 Video] Frame {response.get('frame_index', '?')} response")
-
-                if "error" in response:
-                    logger.error(f"[SAM3 Video] Frame error: {response['error']}")
-                    continue
-
-                frame_idx = response.get("frame_index")
-                if frame_idx is None:
-                    logger.warning("[SAM3 Video] Response missing frame_index")
-                    continue
-
-                # Extract outputs for this frame
-                outputs = response.get("outputs", {})
-                if not outputs:
-                    logger.warning(f"[SAM3 Video] No outputs for frame {frame_idx}")
-                    continue
-
-                # Extract masks and object IDs
-                masks_by_id = {}
-                for obj_id, obj_output in outputs.items():
-                    mask = obj_output.get("mask")
-                    if mask is not None:
-                        masks_by_id[int(obj_id)] = _mask_to_u8(mask)
-
-                if masks_by_id:
-                    logger.debug(f"[SAM3 Video] Frame {frame_idx}: {len(masks_by_id)} objects")
-                    yield FrameMasks(frame_idx=int(frame_idx), masks_by_id=masks_by_id)
-
-        except Exception as e:
-            logger.error(f"[SAM3 Video] Error during tracking: {e}", exc_info=True)
-            print(f"[SAM3 Video] Error during tracking: {e}")
-            raise
-
-        finally:
-            # Close session if it was created
-            if session_id is not None:
-                try:
-                    logger.info(f"[SAM3 Video] Closing session {session_id}...")
-                    print(f"[SAM3 Video] Closing session {session_id}...")
-                    self._video_predictor.handle_request(
-                        request=dict(
-                            type="close_session",
-                            session_id=session_id,
-                        )
-                    )
-                    logger.info("[SAM3 Video] Session closed successfully")
-                except Exception as e:
-                    print(f"[SAM3 Video] Warning: Failed to end session: {e}")
-
-            # Cleanup temp directory
             try:
-                shutil.rmtree(temp_dir, ignore_errors=False)
-                print("[SAM3 Video] Temp directory cleaned up")
+                # Segmenter cette frame avec chaque prompt texte
+                masks_by_id = {}
+                obj_id = 1
+
+                for text in texts:
+                    logger.debug(f"process_video_concept: frame {frame_idx}, prompt '{text}'")
+
+                    # Utiliser la segmentation IMAGE (simple et robuste)
+                    frame_masks = self.segment_concept_image(
+                        frame,
+                        text=text,
+                        threshold=threshold
+                    )
+
+                    # Ajouter les masks trouvés
+                    for mask_obj_id, mask in frame_masks.items():
+                        masks_by_id[obj_id] = mask
+                        obj_id += 1
+
+                # Yield les résultats pour cette frame
+                if masks_by_id:
+                    logger.debug(f"process_video_concept: frame {frame_idx} -> {len(masks_by_id)} masks")
+                    yield FrameMasks(frame_idx=frame_idx, masks_by_id=masks_by_id)
+                else:
+                    logger.warning(f"process_video_concept: frame {frame_idx} -> no masks found")
+                    # Yield frame vide pour maintenir la continuité
+                    yield FrameMasks(frame_idx=frame_idx, masks_by_id={})
+
             except Exception as e:
-                print(f"[SAM3 Video] Warning: Failed to cleanup temp dir: {e}")
+                logger.error(f"process_video_concept: error on frame {frame_idx}: {e}", exc_info=True)
+                print(f"[SAM3 Video Simple] Warning: Frame {frame_idx} failed: {e}")
+                # Yield frame vide en cas d'erreur
+                yield FrameMasks(frame_idx=frame_idx, masks_by_id={})
+
+        logger.info(f"process_video_concept: completed {total_frames} frames")
+        print(f"[SAM3 Video Simple] ✓ Completed {total_frames} frames")
 
     @torch.no_grad()
-    def track_interactive_video(self, frames: Sequence[Image.Image], prompts: Dict[int, Dict[int, List[Tuple[int,int,int]]]]) -> Iterator[FrameMasks]:
-        """Tracking PVS vidéo avec keyframes interactifs."""
-        if self._video_predictor is None:
+    def process_video_interactive(self, frames: Sequence[Image.Image],
+                                  prompts: Dict[int, Dict[int, List[Tuple[int,int,int]]]]) -> Iterator[FrameMasks]:
+        """Segmentation PVS frame-par-frame avec propagation de keyframes (simplifié).
+
+        Utilise la segmentation IMAGE sur chaque frame. Pour les frames sans prompts,
+        utilise les prompts de la frame clé précédente.
+        """
+        logger.info(f"process_video_interactive: début (frames={len(frames)}, keyframes={list(prompts.keys())})")
+
+        if self._image_processor is None:
+            logger.error("process_video_interactive: SAM3 backend not loaded")
             raise RuntimeError("SAM3 backend not loaded")
 
         if not prompts:
+            logger.error("process_video_interactive: no prompts provided")
             raise ValueError("At least one prompt keyframe is required")
 
-        # Save frames to temporary directory
-        temp_dir = Path(tempfile.mkdtemp(prefix="sam3_video_"))
-        session_id = None
+        total_frames = len(frames)
+        logger.info(f"[SAM3 Video Interactive Simple] Processing {total_frames} frames with {len(prompts)} keyframes")
+        print(f"[SAM3 Video Interactive Simple] Processing {total_frames} frames...")
 
-        try:
-            # Save frames as JPEG sequence
-            print(f"[SAM3 Video Interactive] Saving {len(frames)} frames...")
-            for i, frame in enumerate(frames):
-                frame.convert("RGB").save(temp_dir / f"{i:06d}.jpg", quality=95)
+        # Trouver la première frame avec prompts
+        keyframe_indices = sorted(prompts.keys())
+        if not keyframe_indices:
+            raise ValueError("No keyframes with prompts")
 
-            # Start session
-            print("[SAM3 Video Interactive] Starting video session...")
-            response = self._video_predictor.handle_request(
-                request=dict(
-                    type="start_session",
-                    resource_path=str(temp_dir),
-                )
-            )
+        # Traiter chaque frame
+        for frame_idx in range(total_frames):
+            logger.debug(f"process_video_interactive: processing frame {frame_idx}/{total_frames}")
 
-            if "session_id" not in response:
-                raise RuntimeError(f"Failed to start session: {response}")
+            if frame_idx % 10 == 0:
+                print(f"[SAM3 Video Interactive Simple] Frame {frame_idx}/{total_frames}...")
 
-            session_id = response["session_id"]
-            print(f"[SAM3 Video Interactive] Session started: {session_id}")
-
-            # Add point prompts on keyframes
-            print(f"[SAM3 Video Interactive] Adding prompts on {len(prompts)} keyframes...")
-            for frame_idx, objs in prompts.items():
-                for obj_id, points in objs.items():
-                    prompt_points = [[int(x), int(y)] for x, y, _ in points]
-                    prompt_labels = [int(label) for _, _, label in points]
-
-                    response = self._video_predictor.handle_request(
-                        request=dict(
-                            type="add_prompt",
-                            session_id=session_id,
-                            frame_index=int(frame_idx),
-                            points=prompt_points,
-                            labels=prompt_labels,
-                            object_id=int(obj_id),
-                        )
-                    )
-
-                    if "error" in response:
-                        print(f"[SAM3 Video Interactive] Warning: Prompt on frame {frame_idx}, obj {obj_id} failed: {response['error']}")
-
-            # Propagate through video using streaming API
-            print("[SAM3 Video Interactive] Propagating through video...")
-
-            # Use handle_stream_request for propagation (returns generator)
-            for response in self._video_predictor.handle_stream_request(
-                request=dict(
-                    type="propagate_in_video",
-                    session_id=session_id,
-                )
-            ):
-                if "error" in response:
-                    print(f"[SAM3 Video Interactive] Frame error: {response['error']}")
-                    continue
-
-                frame_idx = response.get("frame_index")
-                if frame_idx is None:
-                    continue
-
-                # Extract outputs for this frame
-                outputs = response.get("outputs", {})
-                if not outputs:
-                    continue
-
-                # Extract masks and object IDs
-                masks_by_id = {}
-                for obj_id, obj_output in outputs.items():
-                    mask = obj_output.get("mask")
-                    if mask is not None:
-                        masks_by_id[int(obj_id)] = _mask_to_u8(mask)
-
-                if masks_by_id:
-                    yield FrameMasks(frame_idx=int(frame_idx), masks_by_id=masks_by_id)
-
-        except Exception as e:
-            print(f"[SAM3 Video Interactive] Error during tracking: {e}")
-            raise
-
-        finally:
-            # Close session if it was created
-            if session_id is not None:
-                try:
-                    print(f"[SAM3 Video Interactive] Closing session {session_id}...")
-                    self._video_predictor.handle_request(
-                        request=dict(
-                            type="close_session",
-                            session_id=session_id,
-                        )
-                    )
-                except Exception as e:
-                    print(f"[SAM3 Video Interactive] Warning: Failed to end session: {e}")
-
-            # Cleanup temp directory
             try:
-                shutil.rmtree(temp_dir, ignore_errors=False)
-                print("[SAM3 Video Interactive] Temp directory cleaned up")
+                # Trouver la keyframe la plus proche (précédente)
+                active_keyframe = None
+                for kf in reversed(keyframe_indices):
+                    if kf <= frame_idx:
+                        active_keyframe = kf
+                        break
+
+                if active_keyframe is None:
+                    # Avant la première keyframe, utiliser la première
+                    active_keyframe = keyframe_indices[0]
+
+                # Utiliser les prompts de cette keyframe
+                frame_prompts = prompts[active_keyframe]
+
+                masks_by_id = {}
+
+                # Segmenter avec les prompts de chaque objet
+                for obj_id, points in frame_prompts.items():
+                    if not points:
+                        continue
+
+                    logger.debug(f"process_video_interactive: frame {frame_idx}, obj {obj_id}, {len(points)} points")
+
+                    # Convertir les points au format attendu
+                    boxes = []
+                    pts = []
+                    for x, y, label in points:
+                        if label >= 0:  # Point positif/négatif
+                            pts.append((x, y, label))
+                        # On pourrait aussi gérer les boxes ici si besoin
+
+                    if pts or boxes:
+                        # Utiliser la segmentation IMAGE interactive
+                        mask = self.segment_interactive_image(
+                            frames[frame_idx],
+                            points=pts,
+                            boxes=boxes
+                        )
+
+                        if mask is not None and mask.max() > 0:
+                            masks_by_id[obj_id] = mask
+
+                # Yield les résultats
+                if masks_by_id:
+                    logger.debug(f"process_video_interactive: frame {frame_idx} -> {len(masks_by_id)} objects")
+                    yield FrameMasks(frame_idx=frame_idx, masks_by_id=masks_by_id)
+                else:
+                    logger.warning(f"process_video_interactive: frame {frame_idx} -> no masks")
+                    yield FrameMasks(frame_idx=frame_idx, masks_by_id={})
+
             except Exception as e:
-                print(f"[SAM3 Video Interactive] Warning: Failed to cleanup temp dir: {e}")
+                logger.error(f"process_video_interactive: error on frame {frame_idx}: {e}", exc_info=True)
+                print(f"[SAM3 Video Interactive Simple] Warning: Frame {frame_idx} failed: {e}")
+                yield FrameMasks(frame_idx=frame_idx, masks_by_id={})
+
+        logger.info(f"process_video_interactive: completed {total_frames} frames")
+        print(f"[SAM3 Video Interactive Simple] ✓ Completed {total_frames} frames")
