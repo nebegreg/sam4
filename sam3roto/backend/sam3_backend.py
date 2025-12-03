@@ -102,48 +102,10 @@ class SAM3Backend:
         print(f"[SAM3] Device: {self.device}, dtype: {self.dtype}")
         print(f"[SAM3] Model ID/Path: {model_id_or_path}")
 
-        # MÉTHODE 1: Essayer transformers (HuggingFace) - VOTRE CODE QUI MARCHAIT
+        # MÉTHODE 1: Essayer repo GitHub officiel (PRIORITAIRE pour support vidéo complet)
+        # Cette méthode supporte l'API vidéo complète avec handle_request()
         try:
-            print("\n[SAM3] 🔄 Tentative 1: Transformers/HuggingFace...")
-            from transformers import Sam3Model, Sam3Processor
-            print("[SAM3] ✓ Imports transformers réussis")
-
-            self.model_id = model_id_or_path
-
-            print(f"[SAM3] Chargement depuis transformers: {model_id_or_path}")
-            model = Sam3Model.from_pretrained(model_id_or_path).to(self.device)
-            processor = Sam3Processor.from_pretrained(model_id_or_path)
-
-            if self.dtype in (torch.float16, torch.bfloat16):
-                print(f"[SAM3] Conversion en {self.dtype}...")
-                model = model.to(dtype=self.dtype)
-            model.eval()
-
-            # Stocker dans les attributs (interface simplifiée pour transformers)
-            self._image_model = model
-            self._image_processor = processor
-            self._video_predictor = model  # Utiliser le même modèle pour vidéo
-            self._use_transformers = True
-
-            print("✅ SAM3 chargé avec succès (transformers)")
-
-            # Print memory stats after loading
-            if self.enable_optimizations:
-                print("\n[SAM3] Memory after loading:")
-                stats_after = self.memory_manager.get_stats()
-                print(stats_after)
-
-            return
-
-        except ImportError as e:
-            print(f"[SAM3] ⚠️  Transformers SAM3 non disponible: {e}")
-        except Exception as e:
-            print(f"[SAM3] ⚠️  Échec transformers: {e}")
-            traceback.print_exc()
-
-        # MÉTHODE 2: Essayer repo GitHub officiel
-        try:
-            print("\n[SAM3] 🔄 Tentative 2: Repo GitHub officiel...")
+            print("\n[SAM3] 🔄 Tentative 1: Repo GitHub officiel...")
             from sam3.model_builder import build_sam3_image_model, build_sam3_video_predictor
             from sam3.model.sam3_image_processor import Sam3Processor as Sam3ProcessorOfficial
             print("[SAM3] ✓ Imports repo GitHub réussis")
@@ -204,10 +166,57 @@ class SAM3Backend:
             return
 
         except ImportError as e:
-            print(f"[SAM3] ❌ Repo GitHub non disponible: {e}", file=sys.stderr)
-            traceback.print_exc()
+            print(f"[SAM3] ⚠️  Repo GitHub non disponible: {e}")
+            print("[SAM3] Tentative de fallback sur transformers...")
         except Exception as e:
-            print(f"[SAM3] ❌ Échec repo GitHub: {e}", file=sys.stderr)
+            print(f"[SAM3] ⚠️  Échec repo GitHub: {e}")
+            print("[SAM3] Tentative de fallback sur transformers...")
+            traceback.print_exc()
+
+        # MÉTHODE 2: Fallback sur Transformers/HuggingFace (IMAGE SEULEMENT)
+        # ⚠️ ATTENTION: La vidéo ne fonctionnera PAS avec transformers
+        # L'API transformers n'a pas handle_request() nécessaire pour le tracking vidéo
+        try:
+            print("\n[SAM3] 🔄 Tentative 2: Transformers/HuggingFace (fallback)...")
+            from transformers import Sam3Model, Sam3Processor
+            print("[SAM3] ✓ Imports transformers réussis")
+
+            self.model_id = model_id_or_path
+
+            print(f"[SAM3] Chargement depuis transformers: {model_id_or_path}")
+            model = Sam3Model.from_pretrained(model_id_or_path).to(self.device)
+            processor = Sam3Processor.from_pretrained(model_id_or_path)
+
+            if self.dtype in (torch.float16, torch.bfloat16):
+                print(f"[SAM3] Conversion en {self.dtype}...")
+                model = model.to(dtype=self.dtype)
+            model.eval()
+
+            # Stocker dans les attributs
+            # ⚠️ IMPORTANT: On utilise le même modèle pour image ET vidéo,
+            # mais la vidéo ne fonctionnera PAS (pas de handle_request)
+            self._image_model = model
+            self._image_processor = processor
+            self._video_predictor = model  # Sera cassé pour la vidéo!
+            self._use_transformers = True
+
+            print("✅ SAM3 chargé avec succès (transformers)")
+            print("⚠️  AVERTISSEMENT: Le tracking vidéo ne fonctionnera PAS avec transformers")
+            print("⚠️  Pour la vidéo, installez le repo GitHub avec:")
+            print("     ./install_sam3_github.sh")
+
+            # Print memory stats after loading
+            if self.enable_optimizations:
+                print("\n[SAM3] Memory after loading:")
+                stats_after = self.memory_manager.get_stats()
+                print(stats_after)
+
+            return
+
+        except ImportError as e:
+            print(f"[SAM3] ⚠️  Transformers SAM3 non disponible: {e}")
+        except Exception as e:
+            print(f"[SAM3] ⚠️  Échec transformers: {e}")
             traceback.print_exc()
 
         # Si on arrive ici, les deux méthodes ont échoué
@@ -215,21 +224,24 @@ class SAM3Backend:
 
 🔧 SOLUTIONS:
 
-1. TRANSFORMERS (Simple):
-   pip install --upgrade transformers
-   # Puis utiliser: 'facebook/sam3-hiera-large'
+1. REPO GITHUB (RECOMMANDÉ - Support vidéo complet):
+   Utilisez le script d'installation fourni:
+   ./install_sam3_github.sh
 
-2. REPO GITHUB (Complet):
-   cd ~/Documents/venv_sam/.external_models
+   OU manuellement:
+   cd /tmp
    git clone https://github.com/facebookresearch/sam3.git
    cd sam3
    pip install -e .
-   # Puis utiliser le chemin local du modèle
+
+2. TRANSFORMERS (Simple - IMAGE SEULEMENT):
+   pip install --upgrade transformers
+   # Note: La vidéo ne fonctionnera PAS avec transformers
 
 3. VÉRIFIER DÉPENDANCES:
    pip install pycocotools decord
 
-Consultez INSTALLATION_RAPIDE.md pour plus de détails."""
+Consultez QUICK_INSTALL.md pour plus de détails."""
 
         print(f"\n[SAM3 FATAL ERROR]\n{error_msg}", file=sys.stderr)
         raise RuntimeError(error_msg)
